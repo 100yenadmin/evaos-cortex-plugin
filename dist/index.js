@@ -95,8 +95,9 @@ class CortexClient {
         const h = { "Content-Type": "application/json" };
         if (this.apiKey)
             h["X-API-Key"] = this.apiKey;
-        if (this.ownerId)
-            h["X-Owner-Id"] = this.ownerId;
+        // NOTE: X-Owner-Id intentionally NOT sent — server resolves ownership
+        // from the API key via flyio-sync. Sending owner_id in headers would
+        // allow identity spoofing in legacy auth mode.
         return h;
     }
     async post(path, body, timeoutMs = 5000) {
@@ -856,6 +857,9 @@ const cortexPlugin = {
     },
     register(api) {
         const cfg = parseConfig(api.pluginConfig);
+        if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
+            api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
+        }
         const client = new CortexClient(cfg.cortexUrl, cfg.apiKey, cfg.ownerId, (msg) => api.logger.warn(msg));
         // --- Local memory cache ---
         let memoryCache = null;
@@ -876,6 +880,10 @@ const cortexPlugin = {
         }
         else {
             api.logger.info("cortex: node:sqlite not available — local cache disabled");
+        }
+        // Security: warn if API key is hardcoded in config instead of env var
+        if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
+            api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
         }
         api.logger.info(`cortex: registered (cortex=${cfg.cortexUrl}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode})`);
         // -------------------------------------------------------------------------
