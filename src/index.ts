@@ -1062,7 +1062,7 @@ const cortexPlugin = {
           query: Type.String({ description: "Search query" }),
           limit: Type.Optional(Type.Number({ description: "Max results (default: 10)" })),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { query, limit } = params as { query: string; limit?: number };
           try {
             const result = await client.search(query, limit ?? 10);
@@ -1075,8 +1075,8 @@ const cortexPlugin = {
                 const id = item.id ?? item.memory_id ?? "";
                 const score = typeof item.score === "number" ? ` (${(Number(item.score) * 100).toFixed(0)}%)` : "";
                 const date = item.created_at ? ` [${String(item.created_at).slice(0, 10)}]` : "";
-                const salience = item.metadata?.salience ?? "";
-                const category = item.metadata?.category ?? "";
+                const salience = (item.metadata as any)?.salience ?? "";
+                const category = (item.metadata as any)?.category ?? "";
                 const meta = [salience, category].filter(Boolean).join("/");
                 const metaTag = meta ? ` [${meta}]` : "";
                 return `${i + 1}. ${content}${score}${date}${metaTag} (id: ${id})`;
@@ -1099,7 +1099,7 @@ const cortexPlugin = {
         parameters: Type.Object({
           content: Type.String({ description: "Information to remember" }),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { content } = params as { content: string };
           try {
             client.remember([{ role: "user", content }]);
@@ -1121,7 +1121,7 @@ const cortexPlugin = {
         parameters: Type.Object({
           memory_id: Type.String({ description: "Memory ID to delete" }),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { memory_id } = params as { memory_id: string };
           try {
             const result = await client.forget(memory_id);
@@ -1151,7 +1151,7 @@ const cortexPlugin = {
           owner_id: Type.Optional(Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
           limit: Type.Optional(Type.Number({ description: "Max retrieval steps (default: 5)" })),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { question, owner_id, limit } = params as { question: string; owner_id?: string; limit?: number };
           try {
             const result = await client.ask(question, owner_id, limit ?? 5);
@@ -1182,7 +1182,7 @@ const cortexPlugin = {
         parameters: Type.Object({
           owner_id: Type.Optional(Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { owner_id } = params as { owner_id?: string };
           try {
             const result = await client.listContradictions(owner_id);
@@ -1215,7 +1215,7 @@ const cortexPlugin = {
           resolution: Type.String({ description: "Resolution explanation (e.g. 'newer memory is correct')" }),
           owner_id: Type.Optional(Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { id, resolution, owner_id } = params as { id: string; resolution: string; owner_id?: string };
           try {
             const result = await client.resolveContradiction(id, resolution, owner_id);
@@ -1241,7 +1241,7 @@ const cortexPlugin = {
           due_at: Type.Optional(Type.String({ description: "ISO 8601 due date/time (e.g. 2026-03-14T00:00:00Z)" })),
           owner_id: Type.Optional(Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { description, due_at, owner_id } = params as { description: string; due_at?: string; owner_id?: string };
           try {
             const result = await client.addCommitment(description, due_at, owner_id);
@@ -1268,7 +1268,7 @@ const cortexPlugin = {
           status: Type.String({ description: "New status: completed or cancelled" }),
           owner_id: Type.Optional(Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { id, status, owner_id } = params as { id: string; status: string; owner_id?: string };
           try {
             const result = await client.updateCommitment(id, status, owner_id);
@@ -1293,7 +1293,7 @@ const cortexPlugin = {
           status: Type.Optional(Type.String({ description: "Filter by status: active, completed, cancelled" })),
           owner_id: Type.Optional(Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { status, owner_id } = params as { status?: string; owner_id?: string };
           try {
             const result = await client.listCommitments(owner_id, status);
@@ -1328,7 +1328,7 @@ const cortexPlugin = {
           description: Type.String({ description: "Description of the unresolved thread or topic" }),
           owner_id: Type.Optional(Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { description, owner_id } = params as { description: string; owner_id?: string };
           try {
             const result = await client.addOpenLoop(description, owner_id);
@@ -1354,7 +1354,7 @@ const cortexPlugin = {
           id: Type.String({ description: "Open loop ID to resolve" }),
           owner_id: Type.Optional(Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { id, owner_id } = params as { id: string; owner_id?: string };
           try {
             const result = await client.resolveOpenLoop(id, owner_id);
@@ -1379,7 +1379,7 @@ const cortexPlugin = {
           status: Type.Optional(Type.String({ description: "Filter by status: open, resolved" })),
           owner_id: Type.Optional(Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
         }),
-        async execute(_toolCallId: string, params: unknown) {
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
           const { status, owner_id } = params as { status?: string; owner_id?: string };
           try {
             const result = await client.listOpenLoops(owner_id, status);
