@@ -2,3 +2,5 @@ node_modules/
 *.tsbuildinfo
 .env
 .DS_Store
+src/
+tsconfig.json
