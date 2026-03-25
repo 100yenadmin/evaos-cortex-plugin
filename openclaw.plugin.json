@@ -1,0 +1,66 @@
+{
+  "id": "cortex",
+  "name": "Memory (Cortex)",
+  "description": "Cortex memory engine — retrieval, storage, and lifecycle management for evaOS",
+  "version": "1.0.0",
+  "kind": "memory",
+  "main": "dist/index.js",
+  "tools": [
+    "cortex_search",
+    "cortex_remember",
+    "cortex_forget",
+    "cortex_ask",
+    "cortex_list_contradictions",
+    "cortex_resolve_contradiction",
+    "cortex_add_commitment",
+    "cortex_update_commitment",
+    "cortex_list_commitments",
+    "cortex_add_open_loop",
+    "cortex_resolve_open_loop",
+    "cortex_list_open_loops"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "cortexUrl": {
+        "type": "string",
+        "description": "Cortex API base URL (e.g. http://localhost:8000 or https://your-fly-app.fly.dev)"
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "Cortex API key (optional for local installs, required for production)"
+      },
+      "ownerId": {
+        "type": "string",
+        "description": "Memory owner namespace (e.g. 'eva', 'andrew-main')"
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "description": "Automatically retrieve relevant memories before each agent turn (default: true)"
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "description": "Automatically capture conversations to memory after each agent turn (default: true)"
+      },
+      "shadowMode": {
+        "type": "boolean",
+        "description": "Shadow mode — capture runs extraction but skips storage (dry-run, default: false)"
+      },
+      "retrievalBudget": {
+        "type": "number",
+        "description": "Max token budget for retrieved memories (default: 2000)"
+      },
+      "maxInjectionChars": {
+        "type": "number",
+        "description": "Max characters to inject into context (default: 8000)"
+      },
+      "retrievalMode": {
+        "type": "string",
+        "enum": ["auto", "fast", "thorough"],
+        "description": "Retrieval mode for memory search (default: fast)"
+      }
+    },
+    "required": []
+  }
+}

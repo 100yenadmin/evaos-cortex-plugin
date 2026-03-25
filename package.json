@@ -1,0 +1,35 @@
+{
+  "name": "@evaos/cortex",
+  "version": "1.0.0",
+  "description": "Cortex memory engine plugin for OpenClaw — retrieval, storage, and lifecycle management",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist/",
+    "openclaw.plugin.json"
+  ],
+  "dependencies": {
+    "@sinclair/typebox": "^0.32.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "openclaw": "*"
+  },
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "memory",
+    "cortex",
+    "evaos"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/100yenadmin/evaos-cortex-plugin.git"
+  }
+}
