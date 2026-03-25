@@ -1022,7 +1022,7 @@ const cortexPlugin = {
       try {
         // Resolve cache path relative to this plugin file
         const pluginDir = typeof __dirname === "string" ? __dirname : dirname(__filename);
-        const cachePath = join(pluginDir, "cache", "memories.db");
+        const cachePath = join(pluginDir, "cache", `memories-${cfg.ownerId || "default"}.db`);
         memoryCache = new LocalMemoryCache(cachePath);
         api.logger.info(`cortex: local memory cache initialized at ${cachePath} (${memoryCache.getCount()} entries)`);
       } catch (err) {

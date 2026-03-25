@@ -865,7 +865,7 @@ const cortexPlugin = {
             try {
                 // Resolve cache path relative to this plugin file
                 const pluginDir = typeof __dirname === "string" ? __dirname : (0, node_path_1.dirname)(__filename);
-                const cachePath = (0, node_path_1.join)(pluginDir, "cache", "memories.db");
+                const cachePath = (0, node_path_1.join)(pluginDir, "cache", `memories-${cfg.ownerId || "default"}.db`);
                 memoryCache = new LocalMemoryCache(cachePath);
                 api.logger.info(`cortex: local memory cache initialized at ${cachePath} (${memoryCache.getCount()} entries)`);
             }
