@@ -27,6 +27,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const typebox_1 = require("@sinclair/typebox");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
+// Module-level flag: emit hardcoded-key warning only once per process lifetime
+let _apiKeyWarningEmitted = false;
 // Dynamic require for node:sqlite (available in Node 22+, avoids TS import issues)
 let NodeDatabaseSync;
 try {
@@ -38,6 +40,9 @@ catch {
 // --- Config ---
 function resolveEnv(value) {
     return value.replace(/\$\{([^}]+)\}/g, (_, key) => process.env[key] ?? "");
+}
+function isEnvInterpolation(value) {
+    return typeof value === "string" && /^\$\{[^}]+\}$/.test(value.trim());
 }
 function parseConfig(raw) {
     const defaults = {
@@ -856,8 +861,12 @@ const cortexPlugin = {
         },
     },
     register(api) {
+        const rawConfig = api.pluginConfig && typeof api.pluginConfig === "object" && !Array.isArray(api.pluginConfig)
+            ? api.pluginConfig
+            : null;
         const cfg = parseConfig(api.pluginConfig);
-        if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
+        if (cfg.apiKey && !isEnvInterpolation(rawConfig?.apiKey) && !_apiKeyWarningEmitted) {
+            _apiKeyWarningEmitted = true;
             api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
         }
         const client = new CortexClient(cfg.cortexUrl, cfg.apiKey, cfg.ownerId, (msg) => api.logger.warn(msg));
@@ -880,10 +889,6 @@ const cortexPlugin = {
         }
         else {
             api.logger.info("cortex: node:sqlite not available — local cache disabled");
-        }
-        // Security: warn if API key is hardcoded in config instead of env var
-        if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
-            api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
         }
         api.logger.info(`cortex: registered (cortex=${cfg.cortexUrl}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode})`);
         // -------------------------------------------------------------------------

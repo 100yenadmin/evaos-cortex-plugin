@@ -28,6 +28,9 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { mkdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+// Module-level flag: emit hardcoded-key warning only once per process lifetime
+let _apiKeyWarningEmitted = false;
+
 // Dynamic require for node:sqlite (available in Node 22+, avoids TS import issues)
 let NodeDatabaseSync: any;
 try {
@@ -85,6 +88,10 @@ interface RetrievalResult {
 
 function resolveEnv(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (_, key) => process.env[key] ?? "");
+}
+
+function isEnvInterpolation(value: unknown): value is string {
+  return typeof value === "string" && /^\$\{[^}]+\}$/.test(value.trim());
 }
 
 function parseConfig(raw: unknown): EvaMemoryConfig {
@@ -1012,9 +1019,13 @@ const cortexPlugin = {
   },
 
   register(api: OpenClawPluginApi) {
+    const rawConfig = api.pluginConfig && typeof api.pluginConfig === "object" && !Array.isArray(api.pluginConfig)
+      ? api.pluginConfig as Record<string, unknown>
+      : null;
     const cfg = parseConfig(api.pluginConfig);
-    
-    if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
+
+    if (cfg.apiKey && !isEnvInterpolation(rawConfig?.apiKey) && !_apiKeyWarningEmitted) {
+      _apiKeyWarningEmitted = true;
       api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
     }
 
@@ -1038,11 +1049,6 @@ const cortexPlugin = {
       }
     } else {
       api.logger.info("cortex: node:sqlite not available — local cache disabled");
-    }
-
-    // Security: warn if API key is hardcoded in config instead of env var
-    if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
-      api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
     }
 
     api.logger.info(
