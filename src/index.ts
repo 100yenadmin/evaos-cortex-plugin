@@ -811,6 +811,11 @@ function stripInboundMetadata(prompt: string): string {
 const MEMORY_KEYWORDS = /\b(remember|forgot|recall|last time|previously|before|earlier|you said|you told|we discussed|we decided|my preference|my name|who am i|what do i|do you know|history|past|memory|memorize|don'?t forget)\b/i;
 const TRIVIAL_PATTERNS = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|sure|bye|good morning|good night|go ahead|sounds good|do it|got it|lets do it|let's do it|lets go|let's go|cool|nice|great|agreed|done|will do|on it|yep|nope|nah|alright|perfect|roger|absolutely|definitely|for sure|ship it|merge it|deploy it|👍|😊|👌|🙏|✅)[\s!?.]*$/i;
 
+// Bare question-word follow-ups — these are conversational follow-ups ("why?", "how?") that
+// have near-zero embedding value when searched naked. Route to augmented path (cached last
+// assistant turn + capped retrieval) instead of full retrieval.
+const BARE_QUESTION_FOLLOWUP = /^(why|how|when|what|where|who|huh|really|seriously)[\s!?.]*$/i;
+
 // Sub-agent completion events and runtime system events should not trigger memory retrieval
 const SYSTEM_EVENT_PATTERNS = /\[Internal task completion event\]|<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>|source: subagent|type: subagent task|^\[.*\] Exec (?:completed|failed)|^\[.*\] OpenClaw runtime context/m;
 
@@ -1500,7 +1505,20 @@ const cortexPlugin = {
         let maxMemories = cfg.maxInjectedMemories; // default (8)
         let doRetrieve = false;
 
-        if (hasQuestion) {
+        if (BARE_QUESTION_FOLLOWUP.test(cleanedPrompt.trim())) {
+          // Bare question-word follow-ups: augment with cached assistant turn
+          const sessionKey = ctx.sessionKey ?? "";
+          const lastAssistant = sessionKey ? lastAssistantTurnCache.get(sessionKey) : undefined;
+          if (lastAssistant) {
+            let tail = lastAssistant.slice(-200).trim();
+            const spaceIdx = tail.indexOf(" ");
+            if (spaceIdx > 0 && spaceIdx < 40) tail = tail.slice(spaceIdx + 1);
+            retrievalQuery = tail + " " + cleanedPrompt;
+            doRetrieve = true;
+            maxMemories = 3;
+          }
+          // If no cached assistant turn, skip retrieval (no signal)
+        } else if (hasQuestion) {
           // Questions always retrieve
           doRetrieve = true;
         } else if (isTrivial) {
