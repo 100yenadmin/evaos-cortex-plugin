@@ -27,6 +27,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const typebox_1 = require("@sinclair/typebox");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
+// Module-level flag: emit hardcoded-key warning only once per process lifetime
+let _apiKeyWarningEmitted = false;
 // Dynamic require for node:sqlite (available in Node 22+, avoids TS import issues)
 let NodeDatabaseSync;
 try {
@@ -39,6 +41,9 @@ catch {
 function resolveEnv(value) {
     return value.replace(/\$\{([^}]+)\}/g, (_, key) => process.env[key] ?? "");
 }
+function isEnvInterpolation(value) {
+    return typeof value === "string" && /^\$\{[^}]+\}$/.test(value.trim());
+}
 function parseConfig(raw) {
     const defaults = {
         cortexUrl: "http://localhost:8000",
@@ -50,7 +55,7 @@ function parseConfig(raw) {
         retrievalBudget: 2000,
         maxInjectionChars: 8000,
         maxInjectedMemories: 8,
-        minRelevanceScore: 0.25,
+        minRelevanceScore: 0.30,
         retrievalMode: "fast",
         recencyFilterMinutes: 15,
         injectCornerstones: false,
@@ -651,9 +656,30 @@ async function syncMemoryCache(client, cache, logger) {
         logger.warn(`cortex: cache sync failed: ${String(err)}`);
     }
 }
+// --- Inbound metadata stripper ---
+function stripInboundMetadata(prompt) {
+    let text = prompt;
+    // Strip Sender/Conversation info metadata blocks
+    text = text.replace(/(?:Sender|Conversation info) \(untrusted metadata\):\n```json\n[\s\S]*?```\n?/g, "");
+    // Strip only OpenClaw-decorated system lines (not bare "System:" which could be user content)
+    text = text.replace(/^System \(untrusted\):.*$/gm, "");
+    // Strip [Thread history ...] block: header line + indented/prefixed lines until blank line
+    text = text.replace(/^\[Thread history[^\n]*\n(?:(?:  |\w+:)[^\n]*\n)*\n?/gm, "");
+    // Strip timestamp prefixes at start of text like [Mon 2026-04-02 14:51 GMT+7]
+    text = text.replace(/^\[[A-Za-z]{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}[^\]]*\]\s*/gm, "");
+    // Strip <relevant-memories>...</relevant-memories> blocks
+    text = text.replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/g, "");
+    // Collapse multiple newlines to single
+    text = text.replace(/\n{2,}/g, "\n");
+    return text.trim();
+}
 // --- Memory-relevance heuristic ---
 const MEMORY_KEYWORDS = /\b(remember|forgot|recall|last time|previously|before|earlier|you said|you told|we discussed|we decided|my preference|my name|who am i|what do i|do you know|history|past|memory|memorize|don'?t forget)\b/i;
-const TRIVIAL_PATTERNS = /^(hi|hello|hey|thanks|ok|yes|no|sure|bye|good morning|good night|👍|😊)[\s!?.]*$/i;
+const TRIVIAL_PATTERNS = /^(hi|hello|hey|thanks|thank you|ok|okay|yes|no|sure|bye|good morning|good night|go ahead|sounds good|do it|got it|lets do it|let's do it|lets go|let's go|cool|nice|great|agreed|done|will do|on it|yep|nope|nah|alright|perfect|roger|absolutely|definitely|for sure|ship it|merge it|deploy it|👍|😊|👌|🙏|✅)[\s!?.]*$/i;
+// Bare question-word follow-ups — these are conversational follow-ups ("why?", "how?") that
+// have near-zero embedding value when searched naked. Route to augmented path (cached last
+// assistant turn + capped retrieval) instead of full retrieval.
+const BARE_QUESTION_FOLLOWUP = /^(why|how|when|what|where|who|huh|really|seriously)[\s!?.]*$/i;
 // Sub-agent completion events and runtime system events should not trigger memory retrieval
 const SYSTEM_EVENT_PATTERNS = /\[Internal task completion event\]|<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>|source: subagent|type: subagent task|^\[.*\] Exec (?:completed|failed)|^\[.*\] OpenClaw runtime context/m;
 function isMemoryRelevant(prompt) {
@@ -753,7 +779,27 @@ function filterEchoMemories(items, currentSessionId, recencyFilterMinutes) {
         return true;
     });
 }
-function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.25) {
+const MEMORY_PREAMBLE = `Long-term memories from your Cortex memory system, matched to this conversation.
+Format: [score%] [date] [salience/category] content {item_id}
+
+Score: >70% strong match, 30-50% tangential. Weight accordingly.
+Current conversation context takes priority over stored memories.
+These are cross-session signposts — use cortex_search or conversation history tools to find full context behind any memory.
+
+Category guide:
+- identity: Core self-concept. Stable but verify against observed behavior.
+- preferences/decisions: Apply when relevant. Newer entries supersede older ones.
+- goals: Check date — past deadlines may mean completed or abandoned. Confirm if unsure.
+- episodic: Past events. Date-sensitive. Reference only when directly relevant.
+- behavioral/relational: Patterns and tone context. Descriptive, not prescriptive.
+
+Rules:
+- If memories contradict each other, prefer the more recent one or ask.
+- If a memory contradicts what you observe in this conversation, trust the conversation.
+- Surface relevant context naturally — don't force irrelevant memories into responses.
+- Never expose item_ids, scores, or metadata to the user.
+- Use cortex_search with keywords or {item_id} to look up more context.`;
+function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.30) {
     if (!items.length)
         return "";
     // Filter by relevance score and cap count
@@ -763,39 +809,55 @@ function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.25) {
     if (!relevant.length)
         return "";
     const lines = ["<relevant-memories>"];
-    let charCount = 0;
+    lines.push(MEMORY_PREAMBLE);
+    let charCount = MEMORY_PREAMBLE.length;
+    let injectedCount = 0;
     for (const item of relevant) {
         const tag = item.source === "cornerstone" ? " [cornerstone]" : "";
-        // Build metadata prefix: [id] [date] [salience/category]
-        const id = item.item_id ? `[${item.item_id.slice(0, 8)}]` : "";
+        // Build metadata: [score%] [date] [salience/category] content {item_id}
+        const score = typeof item.score === "number" && Number.isFinite(item.score)
+            ? `[${Math.round(item.score * 100)}%]`
+            : "";
         const date = item.created_at ? `[${item.created_at.slice(0, 10)}]` : "";
         const salience = item.metadata?.salience ?? "";
         const category = item.metadata?.category ?? "";
         const meta = [salience, category].filter(Boolean).join("/");
         const metaTag = meta ? `[${meta}]` : "";
-        const prefix = [id, date, metaTag].filter(Boolean).join(" ");
+        const idSuffix = item.item_id ? ` {${item.item_id.slice(0, 8)}}` : "";
+        const prefix = [score, date, metaTag].filter(Boolean).join(" ");
         const line = prefix
-            ? `- ${prefix} ${item.content}${tag}`
-            : `- ${item.content}${tag}`;
+            ? `- ${prefix} ${item.content}${tag}${idSuffix}`
+            : `- ${item.content}${tag}${idSuffix}`;
         if (charCount + line.length > maxChars)
             break;
         lines.push(line);
         charCount += line.length;
+        injectedCount++;
     }
-    if (lines.length === 1)
-        return ""; // Only header, no items fit
+    if (lines.length <= 2)
+        return ""; // Only header + preamble, no actual items fit
+    // Footer: show retrieval count if more were available than injected
+    if (items.length > injectedCount) {
+        lines.push(`[${injectedCount} of ${items.length} memories shown — use cortex_search for more]`);
+    }
     lines.push("</relevant-memories>");
     return lines.join("\n");
 }
 // --- Message extraction (with junk filter) ---
 function extractMessages(rawMessages) {
     const result = [];
-    for (const msg of rawMessages.slice(-10)) {
+    // Walk backwards from end to collect last 5 user/assistant messages
+    // Avoids filtering the entire session history (can be 30K+ messages / 70MB+)
+    const tail = [];
+    for (let i = rawMessages.length - 1; i >= 0 && tail.length < 5; i--) {
+        const msg = rawMessages[i];
         if (!msg || typeof msg !== "object")
             continue;
         const m = msg;
-        if (m.role !== "user" && m.role !== "assistant")
-            continue;
+        if (m.role === "user" || m.role === "assistant")
+            tail.unshift(m);
+    }
+    for (const m of tail) {
         let text = "";
         if (typeof m.content === "string") {
             text = m.content;
@@ -848,7 +910,7 @@ const cortexPlugin = {
                 retrievalBudget: { type: "number" },
                 maxInjectionChars: { type: "number" },
                 maxInjectedMemories: { type: "number", description: "Max memories to inject per turn (default: 8)" },
-                minRelevanceScore: { type: "number", description: "Min score to inject a memory (default: 0.25)" },
+                minRelevanceScore: { type: "number", description: "Min score to inject a memory (default: 0.30)" },
                 retrievalMode: { type: "string", enum: ["auto", "fast", "thorough"], description: "Retrieval mode for memory search (default: auto)" },
                 recencyFilterMinutes: { type: "number", description: "Filter out memories created within this many minutes to suppress echo (default: 15, 0 to disable)" },
             },
@@ -856,8 +918,12 @@ const cortexPlugin = {
         },
     },
     register(api) {
+        const rawConfig = api.pluginConfig && typeof api.pluginConfig === "object" && !Array.isArray(api.pluginConfig)
+            ? api.pluginConfig
+            : null;
         const cfg = parseConfig(api.pluginConfig);
-        if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
+        if (cfg.apiKey && !isEnvInterpolation(rawConfig?.apiKey) && !_apiKeyWarningEmitted) {
+            _apiKeyWarningEmitted = true;
             api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
         }
         const client = new CortexClient(cfg.cortexUrl, cfg.apiKey, cfg.ownerId, (msg) => api.logger.warn(msg));
@@ -880,10 +946,6 @@ const cortexPlugin = {
         }
         else {
             api.logger.info("cortex: node:sqlite not available — local cache disabled");
-        }
-        // Security: warn if API key is hardcoded in config instead of env var
-        if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
-            api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
         }
         api.logger.info(`cortex: registered (cortex=${cfg.cortexUrl}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode})`);
         // -------------------------------------------------------------------------
@@ -1208,6 +1270,8 @@ const cortexPlugin = {
         // -------------------------------------------------------------------------
         // Hooks
         // -------------------------------------------------------------------------
+        // Cache last assistant turn per session for trivial-query augmentation
+        const lastAssistantTurnCache = new Map();
         // Auto-recall: inject cornerstones (always) + relevant memories (when relevant)
         // Lane guards prevent injection on heartbeat, boot, subagent, cron, isolated lanes.
         // Server-first: always call Cortex API (semantic embeddings). Local cache is fallback only.
@@ -1221,7 +1285,54 @@ const cortexPlugin = {
             }
             // --- Fetch contextual memories (+ optional cornerstones) ---
             if (cfg.autoRecall) {
-                const doRetrieve = event.prompt && isMemoryRelevant(event.prompt);
+                // Strip metadata from prompt for retrieval decisions
+                const cleanedPrompt = event.prompt ? stripInboundMetadata(event.prompt) : "";
+                // Determine retrieval strategy
+                const hasQuestion = cleanedPrompt.includes("?");
+                const isTrivial = TRIVIAL_PATTERNS.test(cleanedPrompt.trim());
+                const isRelevant = cleanedPrompt && isMemoryRelevant(cleanedPrompt);
+                let retrievalQuery = cleanedPrompt;
+                let maxMemories = cfg.maxInjectedMemories; // default (8)
+                let doRetrieve = false;
+                if (BARE_QUESTION_FOLLOWUP.test(cleanedPrompt.trim())) {
+                    // Bare question-word follow-ups: augment with cached assistant turn
+                    const sessionKey = ctx.sessionKey ?? "";
+                    const lastAssistant = sessionKey ? lastAssistantTurnCache.get(sessionKey) : undefined;
+                    if (lastAssistant) {
+                        let tail = lastAssistant.slice(-200).trim();
+                        const spaceIdx = tail.indexOf(" ");
+                        if (spaceIdx > 0 && spaceIdx < 40)
+                            tail = tail.slice(spaceIdx + 1);
+                        retrievalQuery = tail + " " + cleanedPrompt;
+                        doRetrieve = true;
+                        maxMemories = 3;
+                    }
+                    // If no cached assistant turn, skip retrieval (no signal)
+                }
+                else if (hasQuestion) {
+                    // Questions always retrieve
+                    doRetrieve = true;
+                }
+                else if (isTrivial) {
+                    // Trivial patterns: augment with last assistant turn if available
+                    const sessionKey = ctx.sessionKey ?? "";
+                    const lastAssistant = sessionKey ? lastAssistantTurnCache.get(sessionKey) : undefined;
+                    if (lastAssistant) {
+                        // Take last ~200 chars, trim to nearest word boundary on left edge
+                        let tail = lastAssistant.slice(-200).trim();
+                        const spaceIdx = tail.indexOf(" ");
+                        if (spaceIdx > 0 && spaceIdx < 40)
+                            tail = tail.slice(spaceIdx + 1);
+                        const lastTwo = tail;
+                        retrievalQuery = lastTwo + " " + cleanedPrompt;
+                        doRetrieve = true;
+                        maxMemories = 3; // Cap injection for trivial queries
+                    }
+                    // If no cached assistant turn, skip retrieval (no signal)
+                }
+                else if (isRelevant) {
+                    doRetrieve = true;
+                }
                 const doCornerstones = cfg.injectCornerstones; // default false — cornerstones in SOUL.md
                 // --- Memory retrieval (server-first, local fallback) ---
                 let memoryItems = [];
@@ -1236,7 +1347,7 @@ const cortexPlugin = {
                     // Fire cornerstones + API retrieve in parallel
                     const [cornerstonesResult, retrieveResult] = await Promise.allSettled([
                         doCornerstones ? client.getCornerstones() : Promise.resolve(null),
-                        client.retrieve(event.prompt, cfg.retrievalBudget, cfg.retrievalMode),
+                        client.retrieve(retrievalQuery, cfg.retrievalBudget, cfg.retrievalMode),
                     ]);
                     // Process cornerstones
                     if (doCornerstones && cornerstonesResult.status === "fulfilled" && cornerstonesResult.value?.length) {
@@ -1267,7 +1378,7 @@ const cortexPlugin = {
                         // Server down — fall back to local cache if available
                         if (memoryCache) {
                             try {
-                                const fallbackResults = memoryCache.search(event.prompt, 20);
+                                const fallbackResults = memoryCache.search(retrievalQuery, 20);
                                 if (fallbackResults.length) {
                                     memoryItems = fallbackResults;
                                     api.logger.info(`cortex: using local cache fallback (${fallbackResults.length} results)`);
@@ -1294,7 +1405,7 @@ const cortexPlugin = {
                     if (filtered.length < memoryItems.length) {
                         api.logger.info(`cortex: echo filter removed ${memoryItems.length - filtered.length} same-session/recent memories`);
                     }
-                    const context = formatMemoryContext(filtered, cfg.maxInjectionChars, cfg.maxInjectedMemories, cfg.minRelevanceScore);
+                    const context = formatMemoryContext(filtered, cfg.maxInjectionChars, maxMemories, cfg.minRelevanceScore);
                     if (context) {
                         const elapsed = Date.now() - startMs;
                         if (elapsed <= 3000) {
@@ -1326,6 +1437,18 @@ const cortexPlugin = {
                 if (hookCtx.isHeartbeat)
                     return;
                 const messages = extractMessages(event.messages);
+                // Cache last assistant message for next-turn augmentation
+                const lastAssistantMsg = messages.filter(m => m.role === "assistant").pop();
+                const cacheKey = ctx.sessionKey ?? "";
+                if (lastAssistantMsg?.content && cacheKey) {
+                    lastAssistantTurnCache.set(cacheKey, lastAssistantMsg.content.slice(0, 2000));
+                    // Limit cache entries to prevent memory leak
+                    if (lastAssistantTurnCache.size > 100) {
+                        const firstKey = lastAssistantTurnCache.keys().next().value;
+                        if (firstKey)
+                            lastAssistantTurnCache.delete(firstKey);
+                    }
+                }
                 // Require at least 2 real messages — single-message captures are noise
                 if (messages.length < 2)
                     return;
