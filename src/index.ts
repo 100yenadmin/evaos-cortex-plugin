@@ -923,22 +923,26 @@ function filterEchoMemories(
   });
 }
 
-const MEMORY_PREAMBLE = `These are long-term memories retrieved from your memory system based on this conversation.
-Each has an [item_id], [date], and [salience/category] label.
+const MEMORY_PREAMBLE = `Long-term memories from your Cortex memory system, matched to this conversation.
+Format: [score%] [date] [salience/category] content {item_id}
 
-How to use these memories:
-- identity/preferences/decisions: Trust as stable context. Reference when relevant.
-- episodic: Specific past events. Check the date — may be outdated.
-- goals: Strategic direction. Verify if context has changed since the date.
-- behavioral/relational: Patterns and dynamics. Descriptive, not prescriptive.
-- high salience: Identity-defining or emotionally significant. Handle with care.
+Score: >70% strong match, 30-50% tangential. Weight accordingly.
+Current conversation context takes priority over stored memories.
+These are cross-session signposts — use cortex_search or conversation history tools to find full context behind any memory.
 
-Guidelines:
-- Surface relevant preferences or prior decisions naturally in your response.
-- If a memory might change your approach, ask a clarifying question before proceeding.
-- If memories contradict the current request, flag the contradiction.
-- Never expose raw item_ids, scores, or metadata to the user.
-- To look up more context on any memory, use cortex_search with the item_id.`;
+Category guide:
+- identity: Core self-concept. Stable but verify against observed behavior.
+- preferences/decisions: Apply when relevant. Newer entries supersede older ones.
+- goals: Check date — past deadlines may mean completed or abandoned. Confirm if unsure.
+- episodic: Past events. Date-sensitive. Reference only when directly relevant.
+- behavioral/relational: Patterns and tone context. Descriptive, not prescriptive.
+
+Rules:
+- If memories contradict each other, prefer the more recent one or ask.
+- If a memory contradicts what you observe in this conversation, trust the conversation.
+- Surface relevant context naturally — don't force irrelevant memories into responses.
+- Never expose item_ids, scores, or metadata to the user.
+- Use cortex_search with keywords or {item_id} to look up more context.`;
 
 function formatMemoryContext(items: RetrievedItem[], maxChars: number, maxCount = 8, minScore = 0.30): string {
   if (!items.length) return "";
@@ -952,29 +956,40 @@ function formatMemoryContext(items: RetrievedItem[], maxChars: number, maxCount 
   const lines: string[] = ["<relevant-memories>"];
   lines.push(MEMORY_PREAMBLE);
   let charCount = MEMORY_PREAMBLE.length;
+  let injectedCount = 0;
 
   for (const item of relevant) {
     const tag = item.source === "cornerstone" ? " [cornerstone]" : "";
 
-    // Build metadata prefix: [id] [date] [salience/category]
-    const id = item.item_id ? `[${item.item_id.slice(0, 8)}]` : "";
+    // Build metadata: [score%] [date] [salience/category] content {item_id}
+    const score = typeof item.score === "number" && Number.isFinite(item.score)
+      ? `[${Math.round(item.score * 100)}%]`
+      : "";
     const date = item.created_at ? `[${item.created_at.slice(0, 10)}]` : "";
     const salience = item.metadata?.salience ?? "";
     const category = item.metadata?.category ?? "";
     const meta = [salience, category].filter(Boolean).join("/");
     const metaTag = meta ? `[${meta}]` : "";
+    const idSuffix = item.item_id ? ` {${item.item_id.slice(0, 8)}}` : "";
 
-    const prefix = [id, date, metaTag].filter(Boolean).join(" ");
+    const prefix = [score, date, metaTag].filter(Boolean).join(" ");
     const line = prefix
-      ? `- ${prefix} ${item.content}${tag}`
-      : `- ${item.content}${tag}`;
+      ? `- ${prefix} ${item.content}${tag}${idSuffix}`
+      : `- ${item.content}${tag}${idSuffix}`;
 
     if (charCount + line.length > maxChars) break;
     lines.push(line);
     charCount += line.length;
+    injectedCount++;
   }
 
   if (lines.length <= 2) return ""; // Only header + preamble, no actual items fit
+
+  // Footer: show retrieval count if more were available than injected
+  if (items.length > injectedCount) {
+    lines.push(`[${injectedCount} of ${items.length} memories shown — use cortex_search for more]`);
+  }
+
   lines.push("</relevant-memories>");
   return lines.join("\n");
 }
