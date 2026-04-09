@@ -787,8 +787,11 @@ function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.25) {
         charCount += line.length;
         injectedCount++;
     }
-    if (lines.length === 1)
+    if (lines.length === 1) {
+        if (capHit)
+            api.logger.info(`[cortex] memories-injected=0/${relevant.length} chars=${charCount}/${maxChars}`);
         return ""; // Only header, no items fit
+    }
     if (capHit) {
         api.logger.info(`[cortex] memories-injected=${injectedCount}/${relevant.length} chars=${charCount}/${maxChars}`);
         lines.push(`[${injectedCount} of ${relevant.length} memories shown — use cortex_search for more]`);
