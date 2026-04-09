@@ -790,7 +790,7 @@ function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.25) {
     if (lines.length === 1)
         return ""; // Only header, no items fit
     if (capHit) {
-        console.info(`[cortex] memories-injected=${injectedCount}/${relevant.length} chars=${charCount}/${maxChars}`);
+        api.logger.info(`[cortex] memories-injected=${injectedCount}/${relevant.length} chars=${charCount}/${maxChars}`);
         lines.push(`[${injectedCount} of ${relevant.length} memories shown — use cortex_search for more]`);
     }
     lines.push("</relevant-memories>");
