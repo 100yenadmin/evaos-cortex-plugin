@@ -765,6 +765,7 @@ function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.25) {
     const lines = ["<relevant-memories>"];
     let charCount = 0;
     let injectedCount = 0;
+    let capHit = false;
     for (const item of relevant) {
         const tag = item.source === "cornerstone" ? " [cornerstone]" : "";
         // Build metadata prefix: [id] [date] [salience/category]
@@ -778,17 +779,19 @@ function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.25) {
         const line = prefix
             ? `- ${prefix} ${item.content}${tag}`
             : `- ${item.content}${tag}`;
-        if (charCount + line.length > maxChars)
+        if (charCount + line.length > maxChars) {
+            capHit = true;
             break;
+        }
         lines.push(line);
         charCount += line.length;
         injectedCount++;
     }
     if (lines.length === 1)
         return ""; // Only header, no items fit
-    if (items.length > injectedCount) {
-        console.info(`[cortex] memories-injected=${injectedCount}/${items.length} chars=${charCount}/${maxChars}`);
-        lines.push(`[${injectedCount} of ${items.length} memories shown — use cortex_search for more]`);
+    if (capHit) {
+        console.info(`[cortex] memories-injected=${injectedCount}/${relevant.length} chars=${charCount}/${maxChars}`);
+        lines.push(`[${injectedCount} of ${relevant.length} memories shown — use cortex_search for more]`);
     }
     lines.push("</relevant-memories>");
     return lines.join("\n");
