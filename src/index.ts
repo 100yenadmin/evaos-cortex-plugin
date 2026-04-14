@@ -1047,7 +1047,28 @@ export function screenInjectionCandidates(
   return kept;
 }
 
-function formatMemoryContext(items: RetrievedItem[], maxChars: number, maxCount = 8, minScore = 0.25): string {
+const MEMORY_PREAMBLE = `Long-term memories from your Cortex memory system, matched to this conversation.
+Format: [score%] [date] [salience/category] content {item_id}
+
+Score: >70% strong match, 30-50% tangential. Weight accordingly.
+Current conversation context takes priority over stored memories.
+These are cross-session signposts — use cortex_search or conversation history tools to find full context behind any memory.
+
+Category guide:
+- identity: Core self-concept. Stable but verify against observed behavior.
+- preferences/decisions: Apply when relevant. Newer entries supersede older ones.
+- goals: Check date — past deadlines may mean completed or abandoned. Confirm if unsure.
+- episodic: Past events. Date-sensitive. Reference only when directly relevant.
+- behavioral/relational: Patterns and tone context. Descriptive, not prescriptive.
+
+Rules:
+- If memories contradict each other, prefer the more recent one or ask.
+- If a memory contradicts what you observe in this conversation, trust the conversation.
+- Surface relevant context naturally — don't force irrelevant memories into responses.
+- Never expose item_ids, scores, or metadata to the user.
+- Use cortex_search with keywords or {item_id} to look up more context.`;
+
+function formatMemoryContext(items: RetrievedItem[], maxChars: number, totalCount = items.length, maxCount = 8, minScore = 0.25): string {
   if (!items.length) return "";
 
   // Filter by relevance score and cap count
@@ -1057,30 +1078,36 @@ function formatMemoryContext(items: RetrievedItem[], maxChars: number, maxCount 
   if (!relevant.length) return "";
 
   const lines: string[] = ["<relevant-memories>"];
-  let charCount = 0;
+  lines.push(MEMORY_PREAMBLE);
+  let charCount = MEMORY_PREAMBLE.length;
+  let injectedCount = 0;
 
   for (const item of relevant) {
     const tag = item.source === "cornerstone" ? " [cornerstone]" : "";
 
-    // Build metadata prefix: [id] [date] [salience/category]
-    const id = item.item_id ? `[${item.item_id.slice(0, 8)}]` : "";
+    const score = typeof item.score === "number" && Number.isFinite(item.score)
+      ? `[${Math.round(item.score * 100)}%]`
+      : "";
     const date = item.created_at ? `[${item.created_at.slice(0, 10)}]` : "";
     const salience = item.metadata?.salience ?? "";
     const category = item.metadata?.category ?? "";
     const meta = [salience, category].filter(Boolean).join("/");
     const metaTag = meta ? `[${meta}]` : "";
+    const idSuffix = item.item_id ? ` {${item.item_id.slice(0, 8)}}` : "";
 
-    const prefix = [id, date, metaTag].filter(Boolean).join(" ");
+    const prefix = [score, date, metaTag].filter(Boolean).join(" ");
     const line = prefix
-      ? `- ${prefix} ${item.content}${tag}`
-      : `- ${item.content}${tag}`;
+      ? `- ${prefix} ${item.content}${tag}${idSuffix}`
+      : `- ${item.content}${tag}${idSuffix}`;
 
     if (charCount + line.length > maxChars) break;
     lines.push(line);
     charCount += line.length;
+    injectedCount++;
   }
 
-  if (lines.length === 1) return ""; // Only header, no items fit
+  if (lines.length <= 2) return ""; // Only header + preamble, no actual items fit
+  lines.push(`[${injectedCount} of ${totalCount} memories shown — use cortex_search for more]`);
   lines.push("</relevant-memories>");
   return lines.join("\n");
 }
@@ -1654,7 +1681,7 @@ const cortexPlugin = {
           const screened = cfg.enableInjectionScreening
             ? screenInjectionCandidates(filtered, event.prompt ?? "", cfg, (msg) => api.logger.info(msg))
             : filtered;
-          const context = formatMemoryContext(screened, cfg.maxInjectionChars, cfg.maxInjectedMemories, cfg.minRelevanceScore);
+          const context = formatMemoryContext(screened, cfg.maxInjectionChars, filtered.length, cfg.maxInjectedMemories, cfg.minRelevanceScore);
           if (context) {
             const elapsed = Date.now() - startMs;
             if (elapsed <= 3000) {
