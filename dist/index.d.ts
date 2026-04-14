@@ -37,6 +37,10 @@ interface EvaMemoryConfig {
     retrievalMode: string;
     recencyFilterMinutes: number;
     injectCornerstones: boolean;
+    injectionFormat: "v1" | "v2";
+    showConflicts: boolean;
+    showRelations: boolean;
+    dedup: boolean;
     enableInjectionScreening: boolean;
     injectionHardFloor: number;
     injectionCriticalThreshold: number;
@@ -62,6 +66,12 @@ interface RetrievedItem {
     };
     provenance?: string;
 }
+interface ProcessedItem {
+    item: RetrievedItem;
+    duplicateCount: number;
+    conflictWithId?: string;
+    relationHint?: string;
+}
 declare function parseConfig(raw: unknown): EvaMemoryConfig;
 /** Session risk mode for dynamic threshold selection. */
 type InjectionMode = "critical" | "technical" | "personal";
@@ -69,6 +79,7 @@ type InjectionMode = "critical" | "technical" | "personal";
  * Classify the current turn into an injection mode.
  * critical > technical > personal (first match wins).
  */
+export declare function parseEvaMemoryConfig(raw: unknown): EvaMemoryConfig;
 export declare function detectInjectionMode(promptText: string): InjectionMode;
 /**
  * Two-layer injection screening (R-417 + R-418).
@@ -84,6 +95,8 @@ export declare function detectInjectionMode(promptText: string): InjectionMode;
  * Bonus — contradiction suppression: memory says active, prompt says dead
  */
 export declare function screenInjectionCandidates(items: RetrievedItem[], promptText: string, cfg: Pick<EvaMemoryConfig, "injectionHardFloor" | "injectionCriticalThreshold" | "injectionTechnicalThreshold" | "injectionPersonalThreshold">, log?: (msg: string) => void): RetrievedItem[];
+export declare function preprocessClaims(items: RetrievedItem[], options: Pick<EvaMemoryConfig, "showConflicts" | "showRelations" | "dedup">): ProcessedItem[];
+export declare function formatMemoryContext(items: RetrievedItem[], maxChars: number, totalCount?: number, maxCount?: number, minScore?: number, options?: Pick<EvaMemoryConfig, "injectionFormat" | "showConflicts" | "showRelations" | "dedup">): string;
 declare const cortexPlugin: {
     id: string;
     name: string;
@@ -134,6 +147,23 @@ declare const cortexPlugin: {
                     description: string;
                 };
                 recencyFilterMinutes: {
+                    type: string;
+                    description: string;
+                };
+                injectionFormat: {
+                    type: string;
+                    enum: string[];
+                    description: string;
+                };
+                showConflicts: {
+                    type: string;
+                    description: string;
+                };
+                showRelations: {
+                    type: string;
+                    description: string;
+                };
+                dedup: {
                     type: string;
                     description: string;
                 };
