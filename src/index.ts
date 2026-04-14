@@ -358,6 +358,14 @@ class CortexClient {
     return this.get<{ commitments?: Record<string, unknown>[]; total?: number }>(`/api/v1/commitments?${params}`);
   }
 
+  // --- Insights ---
+
+  async listInsights(status = "pending", limit = 5) {
+    return this.get<{ insights?: Record<string, unknown>[]; count?: number }>(
+      `/api/v1/insights?owner_id=${encodeURIComponent(this.ownerId)}&status=${encodeURIComponent(status)}&limit=${encodeURIComponent(String(limit))}`,
+    );
+  }
+
   // --- Open Loops ---
 
   async addOpenLoop(description: string, ownerId?: string) {
@@ -1697,6 +1705,43 @@ const cortexPlugin = {
         },
       },
       { name: "cortex_list_commitments" },
+    );
+
+    api.registerTool(
+      {
+        name: "cortex_insights",
+        label: "Cortex Insights",
+        description: "List cross-system insights from behavioral + memory analysis. Shows patterns, correlations, and recommendations discovered by the dreaming engine.",
+        parameters: Type.Object({
+          status: Type.Optional(Type.String({ description: "Filter by status: pending, accepted, or all" })),
+          limit: Type.Optional(Type.Number({ description: "Max results to return (default: 5)" })),
+        }),
+        async execute(_toolCallId: string, params: unknown): Promise<any> {
+          const { status, limit } = params as { status?: string; limit?: number };
+          try {
+            const result = await client.listInsights(status ?? "pending", limit ?? 5);
+            if (!result) {
+              return { content: [{ type: "text" as const, text: "Failed to fetch insights." }] };
+            }
+            const items = (result as any)?.insights ?? [];
+            if (!items.length) {
+              return { content: [{ type: "text" as const, text: "No insights found." }] };
+            }
+            const text = items
+              .map((insight: any, i: number) => {
+                const conf = typeof insight.confidence === "number" ? ` (${Math.round(insight.confidence * 100)}%)` : "";
+                const type = insight.insight_type ? ` [${insight.insight_type}]` : "";
+                const statusTag = insight.status ? ` [${insight.status}]` : "";
+                return `${i + 1}. ${insight.insight ?? insight.content ?? JSON.stringify(insight)}${conf}${type}${statusTag}`;
+              })
+              .join("\n");
+            return { content: [{ type: "text" as const, text: `Found ${items.length} insight(s):\n\n${text}` }] };
+          } catch (err) {
+            return { content: [{ type: "text" as const, text: `List insights failed: ${String(err)}` }] };
+          }
+        },
+      },
+      { name: "cortex_insights" },
     );
 
     api.registerTool(
