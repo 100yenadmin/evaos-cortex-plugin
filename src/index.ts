@@ -1214,42 +1214,60 @@ function formatMemoryLine(item: RetrievedItem, processed?: ProcessedItem): strin
     : `- ${item.content}${tag}${seen}${conflict}${idSuffix}`;
 }
 
-export function formatMemoryContext(
+function formatMemoryContextV1(
   items: RetrievedItem[],
   maxChars: number,
   totalCount = items.length,
   maxCount = 8,
   minScore = 0.25,
-  options: Pick<EvaMemoryConfig, "injectionFormat" | "showConflicts" | "showRelations" | "dedup"> = {
-    injectionFormat: "v1",
-    showConflicts: true,
-    showRelations: true,
-    dedup: true,
-  },
 ): string {
   if (!items.length) return "";
 
   const relevant = items.filter(item => (item.score ?? 1.0) >= minScore);
   if (!relevant.length) return "";
 
-  const lines: string[] = ["<relevant-memories>"];
+  const lines: string[] = ["<relevant-memories>", MEMORY_PREAMBLE];
+  let charCount = MEMORY_PREAMBLE.length;
+  let injectedCount = 0;
 
-  if (options.injectionFormat === "v1") {
-    let charCount = 0;
-    let injectedCount = 0;
-    for (const item of relevant.slice(0, maxCount)) {
-      const line = formatMemoryLine(item);
-      if (charCount + line.length > maxChars) break;
-      lines.push(line);
-      charCount += line.length;
-      injectedCount++;
-    }
-    if (lines.length <= 1) return "";
-    lines.push("</relevant-memories>");
-    return lines.join("\n");
+  for (const item of relevant.slice(0, maxCount)) {
+    const tag = item.source === "cornerstone" ? " [cornerstone]" : "";
+    const id = item.item_id ? `[${item.item_id.slice(0, 8)}]` : "";
+    const date = item.created_at ? `[${item.created_at.slice(0, 10)}]` : "";
+    const salience = item.metadata?.salience ?? "";
+    const category = item.metadata?.category ?? "";
+    const meta = [salience, category].filter(Boolean).join("/");
+    const metaTag = meta ? `[${meta}]` : "";
+    const prefix = [id, date, metaTag].filter(Boolean).join(" ");
+    const line = prefix
+      ? `- ${prefix} ${item.content}${tag}`
+      : `- ${item.content}${tag}`;
+    if (charCount + line.length > maxChars) break;
+    lines.push(line);
+    charCount += line.length;
+    injectedCount++;
   }
 
-  lines.push(MEMORY_PREAMBLE);
+  if (lines.length <= 2) return "";
+  lines.push(`[${injectedCount} of ${totalCount} memories shown — use cortex_search for more]`);
+  lines.push("</relevant-memories>");
+  return lines.join("\n");
+}
+
+function formatMemoryContextV2(
+  items: RetrievedItem[],
+  maxChars: number,
+  totalCount = items.length,
+  maxCount = 8,
+  minScore = 0.25,
+  options: Pick<EvaMemoryConfig, "injectionFormat" | "showConflicts" | "showRelations" | "dedup">,
+): string {
+  if (!items.length) return "";
+
+  const relevant = items.filter(item => (item.score ?? 1.0) >= minScore);
+  if (!relevant.length) return "";
+
+  const lines: string[] = ["<relevant-memories>", MEMORY_PREAMBLE];
   let charCount = MEMORY_PREAMBLE.length;
   let injectedCount = 0;
   const processed = preprocessClaims(relevant, options);
@@ -1268,6 +1286,24 @@ export function formatMemoryContext(
   lines.push(`[${injectedCount} of ${totalCount} memories shown — use cortex_search for more]`);
   lines.push("</relevant-memories>");
   return lines.join("\n");
+}
+
+export function formatMemoryContext(
+  items: RetrievedItem[],
+  maxChars: number,
+  totalCount = items.length,
+  maxCount = 8,
+  minScore = 0.25,
+  options: Pick<EvaMemoryConfig, "injectionFormat" | "showConflicts" | "showRelations" | "dedup"> = {
+    injectionFormat: "v1",
+    showConflicts: true,
+    showRelations: true,
+    dedup: true,
+  },
+): string {
+  return options.injectionFormat === "v2"
+    ? formatMemoryContextV2(items, maxChars, totalCount, maxCount, minScore, options)
+    : formatMemoryContextV1(items, maxChars, totalCount, maxCount, minScore);
 }
 
 // --- Message extraction (with junk filter) ---

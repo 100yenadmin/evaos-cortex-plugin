@@ -107,8 +107,11 @@ function item(overrides: Record<string, any>) {
     showRelations: true,
     dedup: true,
   });
-  assert.doesNotMatch(formatted, /Long-term memories from your Cortex memory system/);
-  assert.doesNotMatch(formatted, /\[\d+ of \d+ memories shown/);
+  assert.match(formatted, /Long-term memories from your Cortex memory system/);
+  assert.match(formatted, /\[1 of 1 memories shown/);
+  assert.match(formatted, /- \[v1itemid\] \[2026-04-14\] \[medium\/decisions\] Flat memory line/);
+  assert.doesNotMatch(formatted, /\[90%\]/);
+  assert.doesNotMatch(formatted, /\{v1itemid\}/);
   assert.doesNotMatch(formatted, /↳/);
   assert.doesNotMatch(formatted, /\[seen/);
   assert.doesNotMatch(formatted, /⚠️/);
@@ -130,6 +133,8 @@ function item(overrides: Record<string, any>) {
     showRelations: true,
     dedup: true,
   });
+  assert.match(formatted, /Long-term memories from your Cortex memory system/);
+  assert.match(formatted, /\[1 of 1 memories shown/);
   assert.match(formatted, /Lower-score casual memory/);
   assert.equal(cfg.injectionFormat, "v1");
 }

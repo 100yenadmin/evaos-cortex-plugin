@@ -104,8 +104,11 @@ function item(overrides) {
         showRelations: true,
         dedup: true,
     });
-    strict_1.default.doesNotMatch(formatted, /Long-term memories from your Cortex memory system/);
-    strict_1.default.doesNotMatch(formatted, /\[\d+ of \d+ memories shown/);
+    strict_1.default.match(formatted, /Long-term memories from your Cortex memory system/);
+    strict_1.default.match(formatted, /\[1 of 1 memories shown/);
+    strict_1.default.match(formatted, /- \[v1itemid\] \[2026-04-14\] \[medium\/decisions\] Flat memory line/);
+    strict_1.default.doesNotMatch(formatted, /\[90%\]/);
+    strict_1.default.doesNotMatch(formatted, /\{v1itemid\}/);
     strict_1.default.doesNotMatch(formatted, /↳/);
     strict_1.default.doesNotMatch(formatted, /\[seen/);
     strict_1.default.doesNotMatch(formatted, /⚠️/);
@@ -126,6 +129,8 @@ function item(overrides) {
         showRelations: true,
         dedup: true,
     });
+    strict_1.default.match(formatted, /Long-term memories from your Cortex memory system/);
+    strict_1.default.match(formatted, /\[1 of 1 memories shown/);
     strict_1.default.match(formatted, /Lower-score casual memory/);
     strict_1.default.equal(cfg.injectionFormat, "v1");
 }
