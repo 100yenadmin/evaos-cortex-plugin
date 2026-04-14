@@ -40,7 +40,7 @@ function item(overrides: Record<string, any>) {
     dedup: true,
   });
   assert.equal(processed.length, 2);
-  assert.equal(processed[1]?.conflictWithId, "newer123");
+  assert.equal(processed[1]?.conflictWithId, undefined);
 }
 
 {
@@ -107,9 +107,31 @@ function item(overrides: Record<string, any>) {
     showRelations: true,
     dedup: true,
   });
+  assert.doesNotMatch(formatted, /Long-term memories from your Cortex memory system/);
+  assert.doesNotMatch(formatted, /\[\d+ of \d+ memories shown/);
   assert.doesNotMatch(formatted, /↳/);
   assert.doesNotMatch(formatted, /\[seen/);
   assert.doesNotMatch(formatted, /⚠️/);
+}
+
+{
+  const cfg = parseEvaMemoryConfig({
+    injectionHardFloor: Number.NaN,
+    injectionCriticalThreshold: Number.POSITIVE_INFINITY,
+    injectionTechnicalThreshold: -1,
+    injectionPersonalThreshold: 2,
+  });
+  const items = [item({ content: "Lower-score casual memory", score: 0.44, metadata: { salience: "medium", category: "personal" } })];
+  const kept = preprocessClaims(items, { showConflicts: true, showRelations: true, dedup: true });
+  assert.equal(kept.length, 1);
+  const formatted = formatMemoryContext(items, 8000, items.length, 8, 0.25, {
+    injectionFormat: "v2",
+    showConflicts: true,
+    showRelations: true,
+    dedup: true,
+  });
+  assert.match(formatted, /Lower-score casual memory/);
+  assert.equal(cfg.injectionFormat, "v1");
 }
 
 {

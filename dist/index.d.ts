@@ -75,11 +75,12 @@ interface ProcessedItem {
 declare function parseConfig(raw: unknown): EvaMemoryConfig;
 /** Session risk mode for dynamic threshold selection. */
 type InjectionMode = "critical" | "technical" | "personal";
+/** Parse raw plugin config into a validated EvaMemoryConfig object. */
+export declare function parseEvaMemoryConfig(raw: unknown): EvaMemoryConfig;
 /**
  * Classify the current turn into an injection mode.
  * critical > technical > personal (first match wins).
  */
-export declare function parseEvaMemoryConfig(raw: unknown): EvaMemoryConfig;
 export declare function detectInjectionMode(promptText: string): InjectionMode;
 /**
  * Two-layer injection screening (R-417 + R-418).

@@ -42,7 +42,7 @@ function item(overrides) {
         dedup: true,
     });
     strict_1.default.equal(processed.length, 2);
-    strict_1.default.equal(processed[1]?.conflictWithId, "newer123");
+    strict_1.default.equal(processed[1]?.conflictWithId, undefined);
 }
 {
     const processed = (0, index_1.preprocessClaims)([
@@ -104,9 +104,30 @@ function item(overrides) {
         showRelations: true,
         dedup: true,
     });
+    strict_1.default.doesNotMatch(formatted, /Long-term memories from your Cortex memory system/);
+    strict_1.default.doesNotMatch(formatted, /\[\d+ of \d+ memories shown/);
     strict_1.default.doesNotMatch(formatted, /↳/);
     strict_1.default.doesNotMatch(formatted, /\[seen/);
     strict_1.default.doesNotMatch(formatted, /⚠️/);
+}
+{
+    const cfg = (0, index_1.parseEvaMemoryConfig)({
+        injectionHardFloor: Number.NaN,
+        injectionCriticalThreshold: Number.POSITIVE_INFINITY,
+        injectionTechnicalThreshold: -1,
+        injectionPersonalThreshold: 2,
+    });
+    const items = [item({ content: "Lower-score casual memory", score: 0.44, metadata: { salience: "medium", category: "personal" } })];
+    const kept = (0, index_1.preprocessClaims)(items, { showConflicts: true, showRelations: true, dedup: true });
+    strict_1.default.equal(kept.length, 1);
+    const formatted = (0, index_1.formatMemoryContext)(items, 8000, items.length, 8, 0.25, {
+        injectionFormat: "v2",
+        showConflicts: true,
+        showRelations: true,
+        dedup: true,
+    });
+    strict_1.default.match(formatted, /Lower-score casual memory/);
+    strict_1.default.equal(cfg.injectionFormat, "v1");
 }
 {
     const cfg = (0, index_1.parseEvaMemoryConfig)({ injectionFormat: "v2", showConflicts: false, showRelations: false, dedup: false });

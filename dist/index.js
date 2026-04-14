@@ -778,19 +778,21 @@ function filterEchoMemories(items, currentSessionId, recencyFilterMinutes) {
     });
 }
 const TECHNICAL_KEYWORDS = /\b(bench|cortex|debug|config|log|error|exception|script|deploy|git|commit|branch|pytest|migration|run|adapter)\b/i;
-const CRITICAL_KEYWORDS = /bench-\d{8}-\d{6}|deploy|cortex error|config operation|migration|fly deploy|openclaw gateway|prod/i;
-const RUN_ID_RE = /bench-\d{8}-\d{6}/g;
+const CRITICAL_KEYWORDS = /\b(bench-\d{8}-\d{6}|deploy|cortex error|config operation|migration|fly deploy|openclaw gateway|prod)\b/i;
+const RUN_ID_RE = /bench-\d{8}-\d{6}/;
+const RUN_ID_RE_GLOBAL = /bench-\d{8}-\d{6}/g;
 const GIT_TOKENS = /\b(git|PR #|commit|branch)\b/i;
 const FILE_PATH_RE = /[./\\][a-zA-Z0-9_\-./\\]{2,}/;
 const LIVENESS_CLAIM = /\b(still active|still running|is running|is active|is alive|currently running)\b/i;
 const DEATH_CLAIM = /\b(was killed|is dead|died|crashed|no listener|restarted|dead\b|killed\b|stalled)\b/i;
+/** Parse raw plugin config into a validated EvaMemoryConfig object. */
+function parseEvaMemoryConfig(raw) {
+    return parseConfig(raw);
+}
 /**
  * Classify the current turn into an injection mode.
  * critical > technical > personal (first match wins).
  */
-function parseEvaMemoryConfig(raw) {
-    return parseConfig(raw);
-}
 function detectInjectionMode(promptText) {
     if (CRITICAL_KEYWORDS.test(promptText) || RUN_ID_RE.test(promptText))
         return "critical";
@@ -815,16 +817,19 @@ function detectInjectionMode(promptText) {
  */
 function screenInjectionCandidates(items, promptText, cfg, log) {
     const mode = detectInjectionMode(promptText);
-    const hardFloor = cfg.injectionHardFloor;
+    const hardFloor = Number.isFinite(cfg.injectionHardFloor) ? Math.max(0, Math.min(1, cfg.injectionHardFloor)) : 0.50;
+    const criticalThreshold = Number.isFinite(cfg.injectionCriticalThreshold) ? Math.max(0, Math.min(1, cfg.injectionCriticalThreshold)) : 0.75;
+    const technicalThreshold = Number.isFinite(cfg.injectionTechnicalThreshold) ? Math.max(0, Math.min(1, cfg.injectionTechnicalThreshold)) : 0.60;
+    const personalThreshold = Number.isFinite(cfg.injectionPersonalThreshold) ? Math.max(0, Math.min(1, cfg.injectionPersonalThreshold)) : 0.45;
     const modeThreshold = mode === "critical"
-        ? cfg.injectionCriticalThreshold
+        ? criticalThreshold
         : mode === "technical"
-            ? cfg.injectionTechnicalThreshold
-            : cfg.injectionPersonalThreshold;
+            ? technicalThreshold
+            : personalThreshold;
     const promptHasDeathClaim = DEATH_CLAIM.test(promptText);
     // Collect run IDs mentioned in prompt (used for contradiction check)
     const promptRunIds = new Set();
-    for (const m of promptText.matchAll(RUN_ID_RE))
+    for (const m of promptText.matchAll(RUN_ID_RE_GLOBAL))
         promptRunIds.add(m[0]);
     let dropped = 0;
     const kept = [];
@@ -833,33 +838,11 @@ function screenInjectionCandidates(items, promptText, cfg, log) {
         const content = item.content ?? "";
         const category = (item.metadata?.category ?? "").toLowerCase();
         // --- Layer 1.1: Stale run-state filter ---
-        const contentRunIds = [...(content.matchAll(RUN_ID_RE) ?? [])].map(m => m[0]);
-        if (contentRunIds.length > 0 && LIVENESS_CLAIM.test(content)) {
-            // If the prompt already contains a death claim, or the run ID isn’t a live process,
-            // drop this memory (it was captured when the run was alive, now stale).
-            let isStale = false;
-            if (promptHasDeathClaim) {
-                isStale = true;
-            }
-            else {
-                // Check if prompt explicitly references this run as dead / a different run took over
-                for (const runId of contentRunIds) {
-                    if (promptRunIds.has(runId) && DEATH_CLAIM.test(promptText)) {
-                        isStale = true;
-                        break;
-                    }
-                    // Also stale if prompt never mentions this run ID at all but does mention death
-                    if (!promptRunIds.has(runId) && promptHasDeathClaim) {
-                        isStale = true;
-                        break;
-                    }
-                }
-            }
-            if (isStale) {
-                log?.(`[cortex-inject] dropped stale run-state memory: ${content.slice(0, 80)}`);
-                dropped++;
-                continue;
-            }
+        const contentRunIds = [...content.matchAll(RUN_ID_RE_GLOBAL)].map(m => m[0]);
+        if (contentRunIds.length > 0 && LIVENESS_CLAIM.test(content) && promptHasDeathClaim) {
+            log?.(`[cortex-inject] dropped stale run-state memory: ${content.slice(0, 80)}`);
+            dropped++;
+            continue;
         }
         // --- Bonus: Contradiction suppression ---
         // Memory claims something is active, but prompt says it’s dead
@@ -941,8 +924,10 @@ function canonicalSubjectPredicate(item) {
     const category = normalizeText(item.metadata?.category);
     const tokens = textTokens(item.content);
     const subject = tokens[0] ?? "";
-    const anchor = tokens.find(token => token.length >= 5 && !["decided", "plans", "implement", "prioritize", "priority", "first", "next", "build", "schema"].includes(token)) ?? "";
-    return [category, subject, anchor].filter(Boolean).join("|");
+    const importantTokens = tokens.slice(1).filter(token => token.length >= 4 && ![
+        "decided", "plans", "plan", "implement", "prioritize", "priority", "first", "next", "build", "about", "with", "from", "into",
+    ].includes(token));
+    return [category, subject, ...importantTokens.slice(0, 2)].filter(Boolean).join("|");
 }
 function sharedEntityHint(current, previous) {
     const currentTokens = textTokens(current.content);
@@ -962,8 +947,10 @@ function sharedEntityHint(current, previous) {
 }
 function preprocessClaims(items, options) {
     const sorted = [...items].sort((a, b) => {
-        const dateA = a.created_at ? Date.parse(a.created_at) : 0;
-        const dateB = b.created_at ? Date.parse(b.created_at) : 0;
+        const parsedA = a.created_at ? Date.parse(a.created_at) : 0;
+        const parsedB = b.created_at ? Date.parse(b.created_at) : 0;
+        const dateA = Number.isFinite(parsedA) ? parsedA : 0;
+        const dateB = Number.isFinite(parsedB) ? parsedB : 0;
         if (dateA !== dateB)
             return dateB - dateA;
         return (b.score ?? 0) - (a.score ?? 0);
@@ -1040,10 +1027,9 @@ function formatMemoryContext(items, maxChars, totalCount = items.length, maxCoun
     if (!relevant.length)
         return "";
     const lines = ["<relevant-memories>"];
-    lines.push(MEMORY_PREAMBLE);
-    let charCount = MEMORY_PREAMBLE.length;
-    let injectedCount = 0;
     if (options.injectionFormat === "v1") {
+        let charCount = 0;
+        let injectedCount = 0;
         for (const item of relevant.slice(0, maxCount)) {
             const line = formatMemoryLine(item);
             if (charCount + line.length > maxChars)
@@ -1052,21 +1038,26 @@ function formatMemoryContext(items, maxChars, totalCount = items.length, maxCoun
             charCount += line.length;
             injectedCount++;
         }
+        if (lines.length <= 1)
+            return "";
+        lines.push("</relevant-memories>");
+        return lines.join("\n");
     }
-    else {
-        const processed = preprocessClaims(relevant, options);
-        for (const entry of processed.slice(0, maxCount)) {
-            const line = formatMemoryLine(entry.item, entry);
-            const relationLine = entry.relationHint ? `  ↳ ${entry.relationHint}` : "";
-            const needed = line.length + (relationLine ? relationLine.length + 1 : 0);
-            if (charCount + needed > maxChars)
-                break;
-            lines.push(line);
-            if (relationLine)
-                lines.push(relationLine);
-            charCount += needed;
-            injectedCount++;
-        }
+    lines.push(MEMORY_PREAMBLE);
+    let charCount = MEMORY_PREAMBLE.length;
+    let injectedCount = 0;
+    const processed = preprocessClaims(relevant, options);
+    for (const entry of processed.slice(0, maxCount)) {
+        const line = formatMemoryLine(entry.item, entry);
+        const relationLine = entry.relationHint ? `  ↳ ${entry.relationHint}` : "";
+        const needed = line.length + (relationLine ? relationLine.length + 1 : 0);
+        if (charCount + needed > maxChars)
+            break;
+        lines.push(line);
+        if (relationLine)
+            lines.push(relationLine);
+        charCount += needed;
+        injectedCount++;
     }
     if (lines.length <= 2)
         return "";
