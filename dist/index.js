@@ -24,6 +24,11 @@
  *        cortex_add_open_loop, cortex_resolve_open_loop, cortex_list_open_loops
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.parseEvaMemoryConfig = parseEvaMemoryConfig;
+exports.detectInjectionMode = detectInjectionMode;
+exports.screenInjectionCandidates = screenInjectionCandidates;
+exports.preprocessClaims = preprocessClaims;
+exports.formatMemoryContext = formatMemoryContext;
 const typebox_1 = require("@sinclair/typebox");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
@@ -54,6 +59,15 @@ function parseConfig(raw) {
         retrievalMode: "fast",
         recencyFilterMinutes: 15,
         injectCornerstones: false,
+        injectionFormat: "v1",
+        showConflicts: true,
+        showRelations: true,
+        dedup: true,
+        enableInjectionScreening: true,
+        injectionHardFloor: 0.50,
+        injectionCriticalThreshold: 0.75,
+        injectionTechnicalThreshold: 0.60,
+        injectionPersonalThreshold: 0.45,
     };
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
         return defaults;
@@ -62,6 +76,7 @@ function parseConfig(raw) {
     const parsedMode = typeof c.retrievalMode === "string" && VALID_MODES.includes(c.retrievalMode)
         ? c.retrievalMode
         : defaults.retrievalMode;
+    const parsedInjectionFormat = c.injectionFormat === "v2" ? "v2" : defaults.injectionFormat;
     return {
         cortexUrl: typeof c.cortexUrl === "string" ? resolveEnv(c.cortexUrl) : defaults.cortexUrl,
         apiKey: typeof c.apiKey === "string" ? resolveEnv(c.apiKey) : defaults.apiKey,
@@ -76,6 +91,15 @@ function parseConfig(raw) {
         retrievalMode: parsedMode,
         recencyFilterMinutes: typeof c.recencyFilterMinutes === "number" ? c.recencyFilterMinutes : defaults.recencyFilterMinutes,
         injectCornerstones: c.injectCornerstones === true, // default false — cornerstones loaded from SOUL.md
+        injectionFormat: parsedInjectionFormat,
+        showConflicts: c.showConflicts !== false,
+        showRelations: c.showRelations !== false,
+        dedup: c.dedup !== false,
+        enableInjectionScreening: c.enableInjectionScreening !== false,
+        injectionHardFloor: typeof c.injectionHardFloor === "number" ? c.injectionHardFloor : defaults.injectionHardFloor,
+        injectionCriticalThreshold: typeof c.injectionCriticalThreshold === "number" ? c.injectionCriticalThreshold : defaults.injectionCriticalThreshold,
+        injectionTechnicalThreshold: typeof c.injectionTechnicalThreshold === "number" ? c.injectionTechnicalThreshold : defaults.injectionTechnicalThreshold,
+        injectionPersonalThreshold: typeof c.injectionPersonalThreshold === "number" ? c.injectionPersonalThreshold : defaults.injectionPersonalThreshold,
     };
 }
 // --- HTTP Client ---
@@ -753,20 +777,255 @@ function filterEchoMemories(items, currentSessionId, recencyFilterMinutes) {
         return true;
     });
 }
-function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.25) {
+const TECHNICAL_KEYWORDS = /\b(bench|cortex|debug|config|log|error|exception|script|deploy|git|commit|branch|pytest|migration|run|adapter)\b/i;
+const CRITICAL_KEYWORDS = /\b(bench-\d{8}-\d{6}|deploy|cortex error|config operation|migration|fly deploy|openclaw gateway|prod)\b/i;
+const RUN_ID_RE = /bench-\d{8}-\d{6}/;
+const RUN_ID_RE_GLOBAL = /bench-\d{8}-\d{6}/g;
+const GIT_TOKENS = /\b(git|PR #|commit|branch)\b/i;
+const FILE_PATH_RE = /[./\\][a-zA-Z0-9_\-./\\]{2,}/;
+const LIVENESS_CLAIM = /\b(still active|still running|is running|is active|is alive|currently running)\b/i;
+const DEATH_CLAIM = /\b(was killed|is dead|died|crashed|no listener|restarted|dead\b|killed\b|stalled)\b/i;
+/** Parse raw plugin config into a validated EvaMemoryConfig object. */
+function parseEvaMemoryConfig(raw) {
+    return parseConfig(raw);
+}
+/**
+ * Classify the current turn into an injection mode.
+ * critical > technical > personal (first match wins).
+ */
+function detectInjectionMode(promptText) {
+    if (CRITICAL_KEYWORDS.test(promptText) || RUN_ID_RE.test(promptText))
+        return "critical";
+    if (TECHNICAL_KEYWORDS.test(promptText) ||
+        GIT_TOKENS.test(promptText) ||
+        FILE_PATH_RE.test(promptText))
+        return "technical";
+    return "personal";
+}
+/**
+ * Two-layer injection screening (R-417 + R-418).
+ *
+ * Layer 1 — hard rules (deterministic drops)
+ *   1.1 Stale run-state: memory claims a bench run is active but current prompt says it’s dead
+ *   1.2 Category lane: suppress personal/episodic < 0.70 in technical mode
+ *   1.3 Hard floor: drop anything below injectionHardFloor regardless
+ *
+ * Layer 2 — dynamic confidence threshold per session mode
+ *   critical ≥ 0.75, technical ≥ 0.60, personal ≥ 0.45
+ *
+ * Bonus — contradiction suppression: memory says active, prompt says dead
+ */
+function screenInjectionCandidates(items, promptText, cfg, log) {
+    const mode = detectInjectionMode(promptText);
+    const hardFloor = Number.isFinite(cfg.injectionHardFloor) ? Math.max(0, Math.min(1, cfg.injectionHardFloor)) : 0.50;
+    const criticalThreshold = Number.isFinite(cfg.injectionCriticalThreshold) ? Math.max(0, Math.min(1, cfg.injectionCriticalThreshold)) : 0.75;
+    const technicalThreshold = Number.isFinite(cfg.injectionTechnicalThreshold) ? Math.max(0, Math.min(1, cfg.injectionTechnicalThreshold)) : 0.60;
+    const personalThreshold = Number.isFinite(cfg.injectionPersonalThreshold) ? Math.max(0, Math.min(1, cfg.injectionPersonalThreshold)) : 0.45;
+    const modeThreshold = mode === "critical"
+        ? criticalThreshold
+        : mode === "technical"
+            ? technicalThreshold
+            : personalThreshold;
+    const promptHasDeathClaim = DEATH_CLAIM.test(promptText);
+    // Collect run IDs mentioned in prompt (used for contradiction check)
+    const promptRunIds = new Set();
+    for (const m of promptText.matchAll(RUN_ID_RE_GLOBAL))
+        promptRunIds.add(m[0]);
+    let dropped = 0;
+    const kept = [];
+    for (const item of items) {
+        const score = item.score ?? 1.0;
+        const content = item.content ?? "";
+        const category = (item.metadata?.category ?? "").toLowerCase();
+        // --- Layer 1.1: Stale run-state filter ---
+        const contentRunIds = [...content.matchAll(RUN_ID_RE_GLOBAL)].map(m => m[0]);
+        if (contentRunIds.length > 0 && LIVENESS_CLAIM.test(content) && promptHasDeathClaim) {
+            log?.(`[cortex-inject] dropped stale run-state memory: ${content.slice(0, 80)}`);
+            dropped++;
+            continue;
+        }
+        // --- Bonus: Contradiction suppression ---
+        // Memory claims something is active, but prompt says it’s dead
+        if (LIVENESS_CLAIM.test(content) && DEATH_CLAIM.test(promptText)) {
+            log?.(`[cortex-inject] dropped contradicted memory (active claim vs dead context): ${content.slice(0, 80)}`);
+            dropped++;
+            continue;
+        }
+        // --- Layer 1.3: Hard floor ---
+        if (score < hardFloor) {
+            dropped++;
+            continue;
+        }
+        // --- Layer 1.2: Category lane filter (technical sessions) ---
+        if (mode === "technical" || mode === "critical") {
+            const isPersonalCategory = category === "episodic" || category === "personal" || category === "relational" || category === "identity";
+            if (isPersonalCategory && score < 0.70) {
+                dropped++;
+                continue;
+            }
+        }
+        // --- Layer 2: Dynamic confidence threshold ---
+        if (score < modeThreshold) {
+            dropped++;
+            continue;
+        }
+        kept.push(item);
+    }
+    log?.(`[cortex-inject] screening dropped ${dropped} memories (hardFloor=${hardFloor}, mode=${mode}, modeThreshold=${modeThreshold})`);
+    log?.(`[cortex-inject] injecting ${kept.length}/${items.length} memories after screening`);
+    return kept;
+}
+const MEMORY_PREAMBLE = `Long-term memories from your Cortex memory system, matched to this conversation.
+Format: [score%] [date] [salience/category] content {item_id}
+
+Score: >70% strong match, 30-50% tangential. Weight accordingly.
+Current conversation context takes priority over stored memories.
+These are cross-session signposts — use cortex_search or conversation history tools to find full context behind any memory.
+
+Category guide:
+- identity: Core self-concept. Stable but verify against observed behavior.
+- preferences/decisions: Apply when relevant. Newer entries supersede older ones.
+- goals: Check date — past deadlines may mean completed or abandoned. Confirm if unsure.
+- episodic: Past events. Date-sensitive. Reference only when directly relevant.
+- behavioral/relational: Patterns and tone context. Descriptive, not prescriptive.
+
+Rules:
+- If memories contradict each other, prefer the more recent one or ask.
+- If a memory contradicts what you observe in this conversation, trust the conversation.
+- Surface relevant context naturally — don't force irrelevant memories into responses.
+- Never expose item_ids, scores, or metadata to the user.
+- Use cortex_search with keywords or {item_id} to look up more context.`;
+function normalizeText(text) {
+    return (text ?? "")
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+function textTokens(text) {
+    return normalizeText(text).split(" ").filter(Boolean);
+}
+function overlapRatio(left, right) {
+    const leftSet = new Set(textTokens(left));
+    const rightSet = new Set(textTokens(right));
+    if (!leftSet.size || !rightSet.size)
+        return 0;
+    let shared = 0;
+    for (const token of leftSet) {
+        if (rightSet.has(token))
+            shared++;
+    }
+    return shared / Math.max(leftSet.size, rightSet.size);
+}
+function canonicalSubjectPredicate(item) {
+    const provenance = normalizeText(item.provenance);
+    if (provenance)
+        return provenance;
+    const category = normalizeText(item.metadata?.category);
+    const tokens = textTokens(item.content);
+    const subject = tokens[0] ?? "";
+    const importantTokens = tokens.slice(1).filter(token => token.length >= 4 && ![
+        "decided", "plans", "plan", "implement", "prioritize", "priority", "first", "next", "build", "about", "with", "from", "into",
+    ].includes(token));
+    return [category, subject, ...importantTokens.slice(0, 2)].filter(Boolean).join("|");
+}
+function sharedEntityHint(current, previous) {
+    const currentTokens = textTokens(current.content);
+    const previousTokens = new Set(textTokens(previous.content));
+    const shared = currentTokens.filter(token => previousTokens.has(token) && token.length >= 4);
+    if (shared.length === 0)
+        return null;
+    const currentText = normalizeText(current.content);
+    const previousText = normalizeText(previous.content);
+    if (currentText.includes("plan") ||
+        currentText.includes("next") ||
+        previousText.includes("decid") ||
+        shared.includes("priority")) {
+        return "Related to above, may be an update";
+    }
+    return "Related to above";
+}
+function preprocessClaims(items, options) {
+    const sorted = [...items].sort((a, b) => {
+        const parsedA = a.created_at ? Date.parse(a.created_at) : 0;
+        const parsedB = b.created_at ? Date.parse(b.created_at) : 0;
+        const dateA = Number.isFinite(parsedA) ? parsedA : 0;
+        const dateB = Number.isFinite(parsedB) ? parsedB : 0;
+        if (dateA !== dateB)
+            return dateB - dateA;
+        return (b.score ?? 0) - (a.score ?? 0);
+    });
+    const processed = [];
+    const groups = new Map();
+    for (const item of sorted) {
+        const key = canonicalSubjectPredicate(item);
+        const group = groups.get(key) ?? [];
+        let duplicateOf = null;
+        if (options.dedup) {
+            for (const existing of group) {
+                if (overlapRatio(existing.item.content, item.content) >= 0.8) {
+                    duplicateOf = existing;
+                    break;
+                }
+            }
+        }
+        if (duplicateOf) {
+            duplicateOf.duplicateCount += 1;
+            continue;
+        }
+        const entry = {
+            item,
+            duplicateCount: 1,
+        };
+        if (options.showConflicts) {
+            for (const existing of group) {
+                if (overlapRatio(existing.item.content, item.content) < 0.8) {
+                    entry.conflictWithId = existing.item.item_id?.slice(0, 8);
+                    break;
+                }
+            }
+        }
+        if (options.showRelations && processed.length > 0) {
+            const previous = processed[processed.length - 1]?.item;
+            if (previous) {
+                entry.relationHint = sharedEntityHint(item, previous) ?? undefined;
+            }
+        }
+        group.push(entry);
+        groups.set(key, group);
+        processed.push(entry);
+    }
+    return processed;
+}
+function formatMemoryLine(item, processed) {
+    const tag = item.source === "cornerstone" ? " [cornerstone]" : "";
+    const score = typeof item.score === "number" && Number.isFinite(item.score)
+        ? `[${Math.round(item.score * 100)}%]`
+        : "";
+    const date = item.created_at ? `[${item.created_at.slice(0, 10)}]` : "";
+    const salience = item.metadata?.salience ?? "";
+    const category = item.metadata?.category ?? "";
+    const meta = [salience, category].filter(Boolean).join("/");
+    const metaTag = meta ? `[${meta}]` : "";
+    const parts = [score, date, metaTag].filter(Boolean).join(" ");
+    const seen = processed && processed.duplicateCount > 1 ? ` [seen ${processed.duplicateCount}x]` : "";
+    const conflict = processed?.conflictWithId ? ` ⚠️ Conflicts with: {${processed.conflictWithId}}` : "";
+    const idSuffix = item.item_id ? ` {${item.item_id.slice(0, 8)}}` : "";
+    return parts
+        ? `- ${parts} ${item.content}${tag}${seen}${conflict}${idSuffix}`
+        : `- ${item.content}${tag}${seen}${conflict}${idSuffix}`;
+}
+function formatMemoryContextV1(items, maxChars, totalCount = items.length, maxCount = 8, minScore = 0.25) {
     if (!items.length)
         return "";
-    // Filter by relevance score and cap count
-    const relevant = items
-        .filter(item => (item.score ?? 1.0) >= minScore)
-        .slice(0, maxCount);
+    const relevant = items.filter(item => (item.score ?? 1.0) >= minScore);
     if (!relevant.length)
         return "";
-    const lines = ["<relevant-memories>"];
-    let charCount = 0;
-    for (const item of relevant) {
+    const lines = ["<relevant-memories>", MEMORY_PREAMBLE];
+    let charCount = MEMORY_PREAMBLE.length;
+    let injectedCount = 0;
+    for (const item of relevant.slice(0, maxCount)) {
         const tag = item.source === "cornerstone" ? " [cornerstone]" : "";
-        // Build metadata prefix: [id] [date] [salience/category]
         const id = item.item_id ? `[${item.item_id.slice(0, 8)}]` : "";
         const date = item.created_at ? `[${item.created_at.slice(0, 10)}]` : "";
         const salience = item.metadata?.salience ?? "";
@@ -781,11 +1040,51 @@ function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.25) {
             break;
         lines.push(line);
         charCount += line.length;
+        injectedCount++;
     }
-    if (lines.length === 1)
-        return ""; // Only header, no items fit
+    if (lines.length <= 2)
+        return "";
+    lines.push(`[${injectedCount} of ${totalCount} memories shown — use cortex_search for more]`);
     lines.push("</relevant-memories>");
     return lines.join("\n");
+}
+function formatMemoryContextV2(items, maxChars, totalCount = items.length, maxCount = 8, minScore = 0.25, options) {
+    if (!items.length)
+        return "";
+    const relevant = items.filter(item => (item.score ?? 1.0) >= minScore);
+    if (!relevant.length)
+        return "";
+    const lines = ["<relevant-memories>", MEMORY_PREAMBLE];
+    let charCount = MEMORY_PREAMBLE.length;
+    let injectedCount = 0;
+    const processed = preprocessClaims(relevant, options);
+    for (const entry of processed.slice(0, maxCount)) {
+        const line = formatMemoryLine(entry.item, entry);
+        const relationLine = entry.relationHint ? `  ↳ ${entry.relationHint}` : "";
+        const needed = line.length + (relationLine ? relationLine.length + 1 : 0);
+        if (charCount + needed > maxChars)
+            break;
+        lines.push(line);
+        if (relationLine)
+            lines.push(relationLine);
+        charCount += needed;
+        injectedCount++;
+    }
+    if (lines.length <= 2)
+        return "";
+    lines.push(`[${injectedCount} of ${totalCount} memories shown — use cortex_search for more]`);
+    lines.push("</relevant-memories>");
+    return lines.join("\n");
+}
+function formatMemoryContext(items, maxChars, totalCount = items.length, maxCount = 8, minScore = 0.25, options = {
+    injectionFormat: "v1",
+    showConflicts: true,
+    showRelations: true,
+    dedup: true,
+}) {
+    return options.injectionFormat === "v2"
+        ? formatMemoryContextV2(items, maxChars, totalCount, maxCount, minScore, options)
+        : formatMemoryContextV1(items, maxChars, totalCount, maxCount, minScore);
 }
 // --- Message extraction (with junk filter) ---
 function extractMessages(rawMessages) {
@@ -851,6 +1150,15 @@ const cortexPlugin = {
                 minRelevanceScore: { type: "number", description: "Min score to inject a memory (default: 0.25)" },
                 retrievalMode: { type: "string", enum: ["auto", "fast", "thorough"], description: "Retrieval mode for memory search (default: auto)" },
                 recencyFilterMinutes: { type: "number", description: "Filter out memories created within this many minutes to suppress echo (default: 15, 0 to disable)" },
+                injectionFormat: { type: "string", enum: ["v1", "v2"], description: "Memory injection formatter version. Default: v1 for backward compatibility." },
+                showConflicts: { type: "boolean", description: "Annotate conflicting claims in v2 formatting. Default: true." },
+                showRelations: { type: "boolean", description: "Annotate related claims in v2 formatting. Default: true." },
+                dedup: { type: "boolean", description: "Collapse near-duplicate claims in v2 formatting. Default: true." },
+                enableInjectionScreening: { type: "boolean", description: "Enable two-layer injection screening (R-417/R-418). Default: true. Set false to debug." },
+                injectionHardFloor: { type: "number", description: "Hard score floor — drop memories below this regardless of mode (default: 0.50)" },
+                injectionCriticalThreshold: { type: "number", description: "Min score in critical mode (bench runs, deploys) (default: 0.75)" },
+                injectionTechnicalThreshold: { type: "number", description: "Min score in technical mode (coding, debug) (default: 0.60)" },
+                injectionPersonalThreshold: { type: "number", description: "Min score in personal/casual mode (default: 0.45)" },
             },
             required: [],
         },
@@ -1294,7 +1602,16 @@ const cortexPlugin = {
                     if (filtered.length < memoryItems.length) {
                         api.logger.info(`cortex: echo filter removed ${memoryItems.length - filtered.length} same-session/recent memories`);
                     }
-                    const context = formatMemoryContext(filtered, cfg.maxInjectionChars, cfg.maxInjectedMemories, cfg.minRelevanceScore);
+                    // Injection screening (R-417 / R-418): hard rules + confidence gate
+                    const screened = cfg.enableInjectionScreening
+                        ? screenInjectionCandidates(filtered, event.prompt ?? "", cfg, (msg) => api.logger.info(msg))
+                        : filtered;
+                    const context = formatMemoryContext(screened, cfg.maxInjectionChars, filtered.length, cfg.maxInjectedMemories, cfg.minRelevanceScore, {
+                        injectionFormat: cfg.injectionFormat,
+                        showConflicts: cfg.showConflicts,
+                        showRelations: cfg.showRelations,
+                        dedup: cfg.dedup,
+                    });
                     if (context) {
                         const elapsed = Date.now() - startMs;
                         if (elapsed <= 3000) {

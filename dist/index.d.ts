@@ -37,8 +37,67 @@ interface EvaMemoryConfig {
     retrievalMode: string;
     recencyFilterMinutes: number;
     injectCornerstones: boolean;
+    injectionFormat: "v1" | "v2";
+    showConflicts: boolean;
+    showRelations: boolean;
+    dedup: boolean;
+    enableInjectionScreening: boolean;
+    injectionHardFloor: number;
+    injectionCriticalThreshold: number;
+    injectionTechnicalThreshold: number;
+    injectionPersonalThreshold: number;
+}
+interface RetrievedItem {
+    source: string;
+    item_id: string;
+    content: string;
+    score: number;
+    source_session_id?: string;
+    created_at?: string;
+    item_type?: string;
+    metadata?: {
+        memory_class?: string;
+        salience?: string;
+        status?: string;
+        category?: string;
+        explicitness?: string;
+        stability?: string;
+        is_deleted?: number;
+    };
+    provenance?: string;
+}
+interface ProcessedItem {
+    item: RetrievedItem;
+    duplicateCount: number;
+    conflictWithId?: string;
+    relationHint?: string;
 }
 declare function parseConfig(raw: unknown): EvaMemoryConfig;
+/** Session risk mode for dynamic threshold selection. */
+type InjectionMode = "critical" | "technical" | "personal";
+/** Parse raw plugin config into a validated EvaMemoryConfig object. */
+export declare function parseEvaMemoryConfig(raw: unknown): EvaMemoryConfig;
+/**
+ * Classify the current turn into an injection mode.
+ * critical > technical > personal (first match wins).
+ */
+export declare function detectInjectionMode(promptText: string): InjectionMode;
+/**
+ * Two-layer injection screening (R-417 + R-418).
+ *
+ * Layer 1 — hard rules (deterministic drops)
+ *   1.1 Stale run-state: memory claims a bench run is active but current prompt says it’s dead
+ *   1.2 Category lane: suppress personal/episodic < 0.70 in technical mode
+ *   1.3 Hard floor: drop anything below injectionHardFloor regardless
+ *
+ * Layer 2 — dynamic confidence threshold per session mode
+ *   critical ≥ 0.75, technical ≥ 0.60, personal ≥ 0.45
+ *
+ * Bonus — contradiction suppression: memory says active, prompt says dead
+ */
+export declare function screenInjectionCandidates(items: RetrievedItem[], promptText: string, cfg: Pick<EvaMemoryConfig, "injectionHardFloor" | "injectionCriticalThreshold" | "injectionTechnicalThreshold" | "injectionPersonalThreshold">, log?: (msg: string) => void): RetrievedItem[];
+export declare function preprocessClaims(items: RetrievedItem[], options: Pick<EvaMemoryConfig, "showConflicts" | "showRelations" | "dedup">): ProcessedItem[];
+export declare function formatMemoryContext(items: RetrievedItem[], maxChars: number, totalCount?: number, maxCount?: number, minScore?: number, options?: Pick<EvaMemoryConfig, "injectionFormat" | "showConflicts" | "showRelations" | "dedup">): string;
 declare const cortexPlugin: {
     id: string;
     name: string;
@@ -89,6 +148,43 @@ declare const cortexPlugin: {
                     description: string;
                 };
                 recencyFilterMinutes: {
+                    type: string;
+                    description: string;
+                };
+                injectionFormat: {
+                    type: string;
+                    enum: string[];
+                    description: string;
+                };
+                showConflicts: {
+                    type: string;
+                    description: string;
+                };
+                showRelations: {
+                    type: string;
+                    description: string;
+                };
+                dedup: {
+                    type: string;
+                    description: string;
+                };
+                enableInjectionScreening: {
+                    type: string;
+                    description: string;
+                };
+                injectionHardFloor: {
+                    type: string;
+                    description: string;
+                };
+                injectionCriticalThreshold: {
+                    type: string;
+                    description: string;
+                };
+                injectionTechnicalThreshold: {
+                    type: string;
+                    description: string;
+                };
+                injectionPersonalThreshold: {
                     type: string;
                     description: string;
                 };
