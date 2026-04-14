@@ -24,6 +24,8 @@
  *        cortex_add_open_loop, cortex_resolve_open_loop, cortex_list_open_loops
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.detectInjectionMode = detectInjectionMode;
+exports.screenInjectionCandidates = screenInjectionCandidates;
 const typebox_1 = require("@sinclair/typebox");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
@@ -54,6 +56,11 @@ function parseConfig(raw) {
         retrievalMode: "fast",
         recencyFilterMinutes: 15,
         injectCornerstones: false,
+        enableInjectionScreening: true,
+        injectionHardFloor: 0.50,
+        injectionCriticalThreshold: 0.75,
+        injectionTechnicalThreshold: 0.60,
+        injectionPersonalThreshold: 0.45,
     };
     if (!raw || typeof raw !== "object" || Array.isArray(raw))
         return defaults;
@@ -76,6 +83,11 @@ function parseConfig(raw) {
         retrievalMode: parsedMode,
         recencyFilterMinutes: typeof c.recencyFilterMinutes === "number" ? c.recencyFilterMinutes : defaults.recencyFilterMinutes,
         injectCornerstones: c.injectCornerstones === true, // default false — cornerstones loaded from SOUL.md
+        enableInjectionScreening: c.enableInjectionScreening !== false,
+        injectionHardFloor: typeof c.injectionHardFloor === "number" ? c.injectionHardFloor : defaults.injectionHardFloor,
+        injectionCriticalThreshold: typeof c.injectionCriticalThreshold === "number" ? c.injectionCriticalThreshold : defaults.injectionCriticalThreshold,
+        injectionTechnicalThreshold: typeof c.injectionTechnicalThreshold === "number" ? c.injectionTechnicalThreshold : defaults.injectionTechnicalThreshold,
+        injectionPersonalThreshold: typeof c.injectionPersonalThreshold === "number" ? c.injectionPersonalThreshold : defaults.injectionPersonalThreshold,
     };
 }
 // --- HTTP Client ---
@@ -753,7 +765,139 @@ function filterEchoMemories(items, currentSessionId, recencyFilterMinutes) {
         return true;
     });
 }
-function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.25) {
+const TECHNICAL_KEYWORDS = /\b(bench|cortex|debug|config|log|error|exception|script|deploy|git|commit|branch|pytest|migration|run|adapter)\b/i;
+const CRITICAL_KEYWORDS = /bench-\d{8}-\d{6}|deploy|cortex error|config operation|migration|fly deploy|openclaw gateway|prod/i;
+const RUN_ID_RE = /bench-\d{8}-\d{6}/g;
+const GIT_TOKENS = /\b(git|PR #|commit|branch)\b/i;
+const FILE_PATH_RE = /[./\\][a-zA-Z0-9_\-./\\]{2,}/;
+const LIVENESS_CLAIM = /\b(still active|still running|is running|is active|is alive|currently running)\b/i;
+const DEATH_CLAIM = /\b(was killed|is dead|died|crashed|no listener|restarted|dead\b|killed\b|stalled)\b/i;
+/**
+ * Classify the current turn into an injection mode.
+ * critical > technical > personal (first match wins).
+ */
+function detectInjectionMode(promptText) {
+    if (CRITICAL_KEYWORDS.test(promptText) || RUN_ID_RE.test(promptText))
+        return "critical";
+    if (TECHNICAL_KEYWORDS.test(promptText) ||
+        GIT_TOKENS.test(promptText) ||
+        FILE_PATH_RE.test(promptText))
+        return "technical";
+    return "personal";
+}
+/**
+ * Two-layer injection screening (R-417 + R-418).
+ *
+ * Layer 1 — hard rules (deterministic drops)
+ *   1.1 Stale run-state: memory claims a bench run is active but current prompt says it’s dead
+ *   1.2 Category lane: suppress personal/episodic < 0.70 in technical mode
+ *   1.3 Hard floor: drop anything below injectionHardFloor regardless
+ *
+ * Layer 2 — dynamic confidence threshold per session mode
+ *   critical ≥ 0.75, technical ≥ 0.60, personal ≥ 0.45
+ *
+ * Bonus — contradiction suppression: memory says active, prompt says dead
+ */
+function screenInjectionCandidates(items, promptText, cfg, log) {
+    const mode = detectInjectionMode(promptText);
+    const hardFloor = cfg.injectionHardFloor;
+    const modeThreshold = mode === "critical"
+        ? cfg.injectionCriticalThreshold
+        : mode === "technical"
+            ? cfg.injectionTechnicalThreshold
+            : cfg.injectionPersonalThreshold;
+    const promptHasDeathClaim = DEATH_CLAIM.test(promptText);
+    // Collect run IDs mentioned in prompt (used for contradiction check)
+    const promptRunIds = new Set();
+    for (const m of promptText.matchAll(RUN_ID_RE))
+        promptRunIds.add(m[0]);
+    let dropped = 0;
+    const kept = [];
+    for (const item of items) {
+        const score = item.score ?? 1.0;
+        const content = item.content ?? "";
+        const category = (item.metadata?.category ?? "").toLowerCase();
+        // --- Layer 1.1: Stale run-state filter ---
+        const contentRunIds = [...(content.matchAll(RUN_ID_RE) ?? [])].map(m => m[0]);
+        if (contentRunIds.length > 0 && LIVENESS_CLAIM.test(content)) {
+            // If the prompt already contains a death claim, or the run ID isn’t a live process,
+            // drop this memory (it was captured when the run was alive, now stale).
+            let isStale = false;
+            if (promptHasDeathClaim) {
+                isStale = true;
+            }
+            else {
+                // Check if prompt explicitly references this run as dead / a different run took over
+                for (const runId of contentRunIds) {
+                    if (promptRunIds.has(runId) && DEATH_CLAIM.test(promptText)) {
+                        isStale = true;
+                        break;
+                    }
+                    // Also stale if prompt never mentions this run ID at all but does mention death
+                    if (!promptRunIds.has(runId) && promptHasDeathClaim) {
+                        isStale = true;
+                        break;
+                    }
+                }
+            }
+            if (isStale) {
+                log?.(`[cortex-inject] dropped stale run-state memory: ${content.slice(0, 80)}`);
+                dropped++;
+                continue;
+            }
+        }
+        // --- Bonus: Contradiction suppression ---
+        // Memory claims something is active, but prompt says it’s dead
+        if (LIVENESS_CLAIM.test(content) && DEATH_CLAIM.test(promptText)) {
+            log?.(`[cortex-inject] dropped contradicted memory (active claim vs dead context): ${content.slice(0, 80)}`);
+            dropped++;
+            continue;
+        }
+        // --- Layer 1.3: Hard floor ---
+        if (score < hardFloor) {
+            dropped++;
+            continue;
+        }
+        // --- Layer 1.2: Category lane filter (technical sessions) ---
+        if (mode === "technical" || mode === "critical") {
+            const isPersonalCategory = category === "episodic" || category === "personal" || category === "relational" || category === "identity";
+            if (isPersonalCategory && score < 0.70) {
+                dropped++;
+                continue;
+            }
+        }
+        // --- Layer 2: Dynamic confidence threshold ---
+        if (score < modeThreshold) {
+            dropped++;
+            continue;
+        }
+        kept.push(item);
+    }
+    log?.(`[cortex-inject] screening dropped ${dropped} memories (hardFloor=${hardFloor}, mode=${mode}, modeThreshold=${modeThreshold})`);
+    log?.(`[cortex-inject] injecting ${kept.length}/${items.length} memories after screening`);
+    return kept;
+}
+const MEMORY_PREAMBLE = `Long-term memories from your Cortex memory system, matched to this conversation.
+Format: [score%] [date] [salience/category] content {item_id}
+
+Score: >70% strong match, 30-50% tangential. Weight accordingly.
+Current conversation context takes priority over stored memories.
+These are cross-session signposts — use cortex_search or conversation history tools to find full context behind any memory.
+
+Category guide:
+- identity: Core self-concept. Stable but verify against observed behavior.
+- preferences/decisions: Apply when relevant. Newer entries supersede older ones.
+- goals: Check date — past deadlines may mean completed or abandoned. Confirm if unsure.
+- episodic: Past events. Date-sensitive. Reference only when directly relevant.
+- behavioral/relational: Patterns and tone context. Descriptive, not prescriptive.
+
+Rules:
+- If memories contradict each other, prefer the more recent one or ask.
+- If a memory contradicts what you observe in this conversation, trust the conversation.
+- Surface relevant context naturally — don't force irrelevant memories into responses.
+- Never expose item_ids, scores, or metadata to the user.
+- Use cortex_search with keywords or {item_id} to look up more context.`;
+function formatMemoryContext(items, maxChars, totalCount = items.length, maxCount = 8, minScore = 0.25) {
     if (!items.length)
         return "";
     // Filter by relevance score and cap count
@@ -763,27 +907,33 @@ function formatMemoryContext(items, maxChars, maxCount = 8, minScore = 0.25) {
     if (!relevant.length)
         return "";
     const lines = ["<relevant-memories>"];
-    let charCount = 0;
+    lines.push(MEMORY_PREAMBLE);
+    let charCount = MEMORY_PREAMBLE.length;
+    let injectedCount = 0;
     for (const item of relevant) {
         const tag = item.source === "cornerstone" ? " [cornerstone]" : "";
-        // Build metadata prefix: [id] [date] [salience/category]
-        const id = item.item_id ? `[${item.item_id.slice(0, 8)}]` : "";
+        const score = typeof item.score === "number" && Number.isFinite(item.score)
+            ? `[${Math.round(item.score * 100)}%]`
+            : "";
         const date = item.created_at ? `[${item.created_at.slice(0, 10)}]` : "";
         const salience = item.metadata?.salience ?? "";
         const category = item.metadata?.category ?? "";
         const meta = [salience, category].filter(Boolean).join("/");
         const metaTag = meta ? `[${meta}]` : "";
-        const prefix = [id, date, metaTag].filter(Boolean).join(" ");
+        const idSuffix = item.item_id ? ` {${item.item_id.slice(0, 8)}}` : "";
+        const prefix = [score, date, metaTag].filter(Boolean).join(" ");
         const line = prefix
-            ? `- ${prefix} ${item.content}${tag}`
-            : `- ${item.content}${tag}`;
+            ? `- ${prefix} ${item.content}${tag}${idSuffix}`
+            : `- ${item.content}${tag}${idSuffix}`;
         if (charCount + line.length > maxChars)
             break;
         lines.push(line);
         charCount += line.length;
+        injectedCount++;
     }
-    if (lines.length === 1)
-        return ""; // Only header, no items fit
+    if (lines.length <= 2)
+        return ""; // Only header + preamble, no actual items fit
+    lines.push(`[${injectedCount} of ${totalCount} memories shown — use cortex_search for more]`);
     lines.push("</relevant-memories>");
     return lines.join("\n");
 }
@@ -851,6 +1001,11 @@ const cortexPlugin = {
                 minRelevanceScore: { type: "number", description: "Min score to inject a memory (default: 0.25)" },
                 retrievalMode: { type: "string", enum: ["auto", "fast", "thorough"], description: "Retrieval mode for memory search (default: auto)" },
                 recencyFilterMinutes: { type: "number", description: "Filter out memories created within this many minutes to suppress echo (default: 15, 0 to disable)" },
+                enableInjectionScreening: { type: "boolean", description: "Enable two-layer injection screening (R-417/R-418). Default: true. Set false to debug." },
+                injectionHardFloor: { type: "number", description: "Hard score floor — drop memories below this regardless of mode (default: 0.50)" },
+                injectionCriticalThreshold: { type: "number", description: "Min score in critical mode (bench runs, deploys) (default: 0.75)" },
+                injectionTechnicalThreshold: { type: "number", description: "Min score in technical mode (coding, debug) (default: 0.60)" },
+                injectionPersonalThreshold: { type: "number", description: "Min score in personal/casual mode (default: 0.45)" },
             },
             required: [],
         },
@@ -1294,7 +1449,11 @@ const cortexPlugin = {
                     if (filtered.length < memoryItems.length) {
                         api.logger.info(`cortex: echo filter removed ${memoryItems.length - filtered.length} same-session/recent memories`);
                     }
-                    const context = formatMemoryContext(filtered, cfg.maxInjectionChars, cfg.maxInjectedMemories, cfg.minRelevanceScore);
+                    // Injection screening (R-417 / R-418): hard rules + confidence gate
+                    const screened = cfg.enableInjectionScreening
+                        ? screenInjectionCandidates(filtered, event.prompt ?? "", cfg, (msg) => api.logger.info(msg))
+                        : filtered;
+                    const context = formatMemoryContext(screened, cfg.maxInjectionChars, filtered.length, cfg.maxInjectedMemories, cfg.minRelevanceScore);
                     if (context) {
                         const elapsed = Date.now() - startMs;
                         if (elapsed <= 3000) {
