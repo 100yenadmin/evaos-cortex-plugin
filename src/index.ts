@@ -25,7 +25,7 @@
 
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // Dynamic require for node:sqlite (available in Node 22+, avoids TS import issues)
@@ -45,6 +45,15 @@ interface EvaMemoryConfig {
   autoRecall: boolean;
   autoCapture: boolean;
   shadowMode: boolean;
+  gbrainShadowEnabled: boolean;
+  gbrainShadowCapture: boolean;
+  gbrainShadowRecall: boolean;
+  gbrainShadowLogEnabled: boolean;
+  gbrainShadowMaxPromptChars: number;
+  gbrainShadowLogMaxEntries: number;
+  gbrainShadowProviderBaseUrl: string;
+  gbrainShadowModel: string;
+  gbrainShadowApiKey: string;
   retrievalBudget: number;
   maxInjectionChars: number;
   maxInjectedMemories: number;
@@ -98,6 +107,23 @@ interface ProcessedItem {
   relationHint?: string;
 }
 
+interface GBrainShadowEvent {
+  ts: string;
+  phase: "recall" | "capture";
+  sessionId?: string;
+  mode: "observe";
+  provider: {
+    baseUrl: string;
+    model: string;
+  };
+  promptPreview?: string;
+  conversationPreview?: Array<{ role: string; content: string }>;
+  status: "skipped" | "simulated" | "disabled";
+  reason?: string;
+  note: string;
+  wouldInjectCount?: number;
+}
+
 // --- Config ---
 
 function resolveEnv(value: string): string {
@@ -112,6 +138,15 @@ function parseConfig(raw: unknown): EvaMemoryConfig {
     autoRecall: true,
     autoCapture: true,
     shadowMode: false,
+    gbrainShadowEnabled: false,
+    gbrainShadowCapture: true,
+    gbrainShadowRecall: true,
+    gbrainShadowLogEnabled: true,
+    gbrainShadowMaxPromptChars: 2000,
+    gbrainShadowLogMaxEntries: 200,
+    gbrainShadowProviderBaseUrl: "https://api.minimax.io/v1",
+    gbrainShadowModel: "MiniMax-M2.7",
+    gbrainShadowApiKey: "",
     retrievalBudget: 2000,
     maxInjectionChars: 8000,
     maxInjectedMemories: 8,
@@ -143,6 +178,15 @@ function parseConfig(raw: unknown): EvaMemoryConfig {
     autoRecall: c.autoRecall !== false,
     autoCapture: c.autoCapture !== false,
     shadowMode: c.shadowMode === true,
+    gbrainShadowEnabled: c.gbrainShadowEnabled === true,
+    gbrainShadowCapture: c.gbrainShadowCapture !== false,
+    gbrainShadowRecall: c.gbrainShadowRecall !== false,
+    gbrainShadowLogEnabled: c.gbrainShadowLogEnabled !== false,
+    gbrainShadowMaxPromptChars: typeof c.gbrainShadowMaxPromptChars === "number" ? c.gbrainShadowMaxPromptChars : defaults.gbrainShadowMaxPromptChars,
+    gbrainShadowLogMaxEntries: typeof c.gbrainShadowLogMaxEntries === "number" ? c.gbrainShadowLogMaxEntries : defaults.gbrainShadowLogMaxEntries,
+    gbrainShadowProviderBaseUrl: typeof c.gbrainShadowProviderBaseUrl === "string" ? resolveEnv(c.gbrainShadowProviderBaseUrl) : defaults.gbrainShadowProviderBaseUrl,
+    gbrainShadowModel: typeof c.gbrainShadowModel === "string" && c.gbrainShadowModel ? c.gbrainShadowModel : defaults.gbrainShadowModel,
+    gbrainShadowApiKey: typeof c.gbrainShadowApiKey === "string" ? resolveEnv(c.gbrainShadowApiKey) : defaults.gbrainShadowApiKey,
     retrievalBudget: typeof c.retrievalBudget === "number" ? c.retrievalBudget : defaults.retrievalBudget,
     maxInjectionChars: typeof c.maxInjectionChars === "number" ? c.maxInjectionChars : defaults.maxInjectionChars,
     maxInjectedMemories: typeof c.maxInjectedMemories === "number" ? c.maxInjectedMemories : defaults.maxInjectedMemories,
@@ -1316,6 +1360,84 @@ export function formatMemoryContext(
 
 // --- Message extraction (with junk filter) ---
 
+function clampText(text: string, maxChars: number): string {
+  if (maxChars <= 0) return "";
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function buildGBrainShadowLogPath(ownerId: string): string {
+  const pluginDir = typeof __dirname === "string" ? __dirname : dirname(__filename);
+  return join(pluginDir, "logs", `gbrain-shadow-${ownerId || "default"}.jsonl`);
+}
+
+function appendGBrainShadowLog(ownerId: string, maxEntries: number, event: GBrainShadowEvent): void {
+  try {
+    const logPath = buildGBrainShadowLogPath(ownerId);
+    const logDir = dirname(logPath);
+    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+
+    let lines: string[] = [];
+    if (existsSync(logPath)) {
+      try {
+        lines = readFileSync(logPath, "utf8").split("\n").filter(Boolean);
+      } catch {
+        lines = [];
+      }
+    }
+    lines.push(JSON.stringify(event));
+    const trimmed = maxEntries > 0 ? lines.slice(-maxEntries) : lines;
+    writeFileSync(logPath, `${trimmed.join("\n")}\n`, "utf8");
+  } catch {
+    // Observe-only logging must never break authoritative paths.
+  }
+}
+
+export function getGBrainShadowLogPath(ownerId: string): string {
+  return buildGBrainShadowLogPath(ownerId);
+}
+
+export function createGBrainShadowEvent(
+  params: {
+    phase: "recall" | "capture";
+    sessionId?: string;
+    providerBaseUrl: string;
+    model: string;
+    prompt?: string;
+    conversation?: Array<{ role: string; content: string }>;
+    maxPromptChars: number;
+    status: "skipped" | "simulated" | "disabled";
+    reason?: string;
+    note: string;
+    wouldInjectCount?: number;
+  },
+): GBrainShadowEvent {
+  return {
+    ts: new Date().toISOString(),
+    phase: params.phase,
+    sessionId: params.sessionId,
+    mode: "observe",
+    provider: {
+      baseUrl: params.providerBaseUrl,
+      model: params.model,
+    },
+    promptPreview: params.prompt ? clampText(params.prompt, params.maxPromptChars) : undefined,
+    conversationPreview: params.conversation?.map((msg) => ({
+      role: msg.role,
+      content: clampText(msg.content, Math.max(80, Math.floor(params.maxPromptChars / 2))),
+    })),
+    status: params.status,
+    reason: params.reason,
+    note: params.note,
+    wouldInjectCount: params.wouldInjectCount,
+  };
+}
+
+function maybeLogGBrainShadowEvent(cfg: EvaMemoryConfig, event: GBrainShadowEvent): void {
+  if (!cfg.gbrainShadowEnabled || !cfg.gbrainShadowLogEnabled) return;
+  appendGBrainShadowLog(cfg.ownerId, cfg.gbrainShadowLogMaxEntries, event);
+}
+
 function extractMessages(rawMessages: unknown[]): Array<{ role: string; content: string }> {
   const result: Array<{ role: string; content: string }> = [];
 
@@ -1379,6 +1501,15 @@ const cortexPlugin = {
         autoRecall: { type: "boolean" },
         autoCapture: { type: "boolean" },
         shadowMode: { type: "boolean", description: "Shadow mode — capture runs extraction but skips storage (dry-run)" },
+        gbrainShadowEnabled: { type: "boolean", description: "Enable GBrain shadow observe-only scaffolding (default: false)" },
+        gbrainShadowCapture: { type: "boolean", description: "Run observe-only GBrain shadow logging on capture path (default: true)" },
+        gbrainShadowRecall: { type: "boolean", description: "Run observe-only GBrain shadow logging on recall path (default: true)" },
+        gbrainShadowLogEnabled: { type: "boolean", description: "Persist timestamped GBrain shadow contribution logs (default: true)" },
+        gbrainShadowMaxPromptChars: { type: "number", description: "Max chars to keep in GBrain shadow previews (default: 2000)" },
+        gbrainShadowLogMaxEntries: { type: "number", description: "Max shadow log entries to retain per owner (default: 200)" },
+        gbrainShadowProviderBaseUrl: { type: "string", description: "Observe-only GBrain shadow provider base URL, e.g. MiniMax full-model endpoint" },
+        gbrainShadowModel: { type: "string", description: "Observe-only GBrain shadow model name (default: MiniMax-M2.7)" },
+        gbrainShadowApiKey: { type: "string", description: "Optional API key for the observe-only GBrain shadow provider path" },
         retrievalBudget: { type: "number" },
         maxInjectionChars: { type: "number" },
         maxInjectedMemories: { type: "number", description: "Max memories to inject per turn (default: 8)" },
@@ -1434,7 +1565,7 @@ const cortexPlugin = {
     }
 
     api.logger.info(
-      `cortex: registered (cortex=${cfg.cortexUrl}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode})`,
+      `cortex: registered (cortex=${cfg.cortexUrl}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode}, gbrainShadow=${cfg.gbrainShadowEnabled ? "on" : "off"}, gbrainModel=${cfg.gbrainShadowModel})`,
     );
 
     // -------------------------------------------------------------------------
@@ -1924,6 +2055,21 @@ const cortexPlugin = {
           const screened = cfg.enableInjectionScreening
             ? screenInjectionCandidates(filtered, event.prompt ?? "", cfg, (msg) => api.logger.info(msg))
             : filtered;
+
+          if (cfg.gbrainShadowEnabled && cfg.gbrainShadowRecall) {
+            maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
+              phase: "recall",
+              sessionId: ctx.sessionKey,
+              providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
+              model: cfg.gbrainShadowModel,
+              prompt: event.prompt,
+              maxPromptChars: cfg.gbrainShadowMaxPromptChars,
+              status: "simulated",
+              note: "Observe-only recall seam. Logged what GBrain shadow would have seen without affecting authoritative injection.",
+              wouldInjectCount: screened.length,
+            }));
+          }
+
           const context = formatMemoryContext(
             screened,
             cfg.maxInjectionChars,
@@ -1949,6 +2095,19 @@ const cortexPlugin = {
               api.logger.warn(`cortex: retrieval took ${elapsed}ms, skipping memory injection (cornerstones still injected)`);
             }
           }
+        } else if (cfg.gbrainShadowEnabled && cfg.gbrainShadowRecall && event.prompt) {
+          maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
+            phase: "recall",
+            sessionId: ctx.sessionKey,
+            providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
+            model: cfg.gbrainShadowModel,
+            prompt: event.prompt,
+            maxPromptChars: cfg.gbrainShadowMaxPromptChars,
+            status: "skipped",
+            reason: "no-memory-items",
+            note: "Observe-only recall seam ran, but authoritative recall returned no items.",
+            wouldInjectCount: 0,
+          }));
         }
       }
 
@@ -1978,6 +2137,19 @@ const cortexPlugin = {
         if (isBootPrompt(joined) || /HEARTBEAT_OK/i.test(joined) || /Read HEARTBEAT\.md if it exists/i.test(joined)) return;
         // Skip system events (sub-agent completions, exec notifications) — not worth extracting
         if (SYSTEM_EVENT_PATTERNS.test(joined)) return;
+
+        if (cfg.gbrainShadowEnabled && cfg.gbrainShadowCapture) {
+          maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
+            phase: "capture",
+            sessionId: ctx.sessionKey,
+            providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
+            model: cfg.gbrainShadowModel,
+            conversation: messages,
+            maxPromptChars: cfg.gbrainShadowMaxPromptChars,
+            status: "simulated",
+            note: "Observe-only capture seam. Logged end-of-turn conversation GBrain shadow would have processed.",
+          }));
+        }
 
         // Fire and forget — no await, no blocking
         const capturePromise = client.remember(messages, ctx.sessionKey, cfg.shadowMode);
