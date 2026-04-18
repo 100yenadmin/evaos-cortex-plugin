@@ -1548,8 +1548,9 @@ export function extractMessages(rawMessages: unknown[]): Array<{ role: string; c
     // Skip user messages matching trivial/continuation patterns
     if (role === "user" && TRIVIAL_CAPTURE_PATTERNS.some((p) => p.test(text))) continue;
 
-    // Skip synthetic control/system wrapper turns even when they entered as user text
-    if (isSyntheticPromptText(text)) continue;
+    // Skip synthetic control/system wrapper user turns, but keep assistant/system markers
+    // long enough for downstream capture-skip guards to see them.
+    if (role === "user" && isSyntheticPromptText(text)) continue;
 
     result.push({ role, content: text });
   }
