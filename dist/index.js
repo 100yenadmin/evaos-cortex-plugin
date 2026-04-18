@@ -779,18 +779,15 @@ function isSyntheticPromptText(prompt) {
 function hasSyntheticUserTurn(messages) {
     if (!Array.isArray(messages) || messages.length === 0)
         return false;
-    let sawUser = false;
-    for (let index = Math.max(0, messages.length - 10); index < messages.length; index += 1) {
+    for (let index = messages.length - 1; index >= Math.max(0, messages.length - 10); index -= 1) {
         const message = messages[index];
         if (!message || typeof message !== "object")
             continue;
         const role = message.role;
         if (role !== "user")
             continue;
-        sawUser = true;
         const text = extractMessageText(message);
-        if (isSyntheticPromptText(text))
-            return true;
+        return isSyntheticPromptText(text);
     }
     return false;
 }
