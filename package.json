@@ -6,6 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node dist/__tests__/injection-screening.test.js && node dist/__tests__/memory-context-format.test.js && node dist/__tests__/gbrain-shadow.test.js && node dist/__tests__/turn-gating.test.js",
     "prepublishOnly": "npm run build"
   },
   "files": [

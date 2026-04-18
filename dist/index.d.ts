@@ -30,6 +30,15 @@ interface EvaMemoryConfig {
     autoRecall: boolean;
     autoCapture: boolean;
     shadowMode: boolean;
+    gbrainShadowEnabled: boolean;
+    gbrainShadowCapture: boolean;
+    gbrainShadowRecall: boolean;
+    gbrainShadowLogEnabled: boolean;
+    gbrainShadowMaxPromptChars: number;
+    gbrainShadowLogMaxEntries: number;
+    gbrainShadowProviderBaseUrl: string;
+    gbrainShadowModel: string;
+    gbrainShadowApiKey: string;
     retrievalBudget: number;
     maxInjectionChars: number;
     maxInjectedMemories: number;
@@ -72,7 +81,52 @@ interface ProcessedItem {
     conflictWithId?: string;
     relationHint?: string;
 }
+interface GBrainShadowEvent {
+    schemaVersion: "gbrain-shadow-v1";
+    ts: string;
+    phase: "recall" | "capture";
+    sessionId?: string;
+    turnId?: string;
+    mode: "observe";
+    provider: {
+        baseUrl: string;
+        model: string;
+        liveCall: boolean;
+    };
+    gbrainRetrieval?: {
+        attempted: boolean;
+        ok: boolean;
+        query?: string;
+        hits?: Array<{
+            slug: string;
+            preview: string;
+        }>;
+        summary?: string;
+    };
+    promptPreview?: string;
+    conversationPreview?: Array<{
+        role: string;
+        content: string;
+    }>;
+    status: "skipped" | "simulated" | "disabled";
+    reason?: string;
+    note: string;
+    source: "gbrain-shadow-scaffold";
+    divergenceFromAuthoritative?: string;
+}
 declare function parseConfig(raw: unknown): EvaMemoryConfig;
+export declare function isMemoryRelevant(prompt: string): boolean;
+type HookRunKind = "main" | "subagent" | "cron" | "isolated" | "hook" | "unknown";
+type HookLaneContext = {
+    runKind?: HookRunKind;
+    isHeartbeat?: boolean;
+    sessionKey?: string;
+    trigger?: string;
+};
+export declare function classifyTurnForMemory(prompt: string | undefined, messages: unknown[] | undefined, ctx?: HookLaneContext): {
+    allow: boolean;
+    reason: string;
+};
 /** Session risk mode for dynamic threshold selection. */
 type InjectionMode = "critical" | "technical" | "personal";
 /** Parse raw plugin config into a validated EvaMemoryConfig object. */
@@ -98,6 +152,38 @@ export declare function detectInjectionMode(promptText: string): InjectionMode;
 export declare function screenInjectionCandidates(items: RetrievedItem[], promptText: string, cfg: Pick<EvaMemoryConfig, "injectionHardFloor" | "injectionCriticalThreshold" | "injectionTechnicalThreshold" | "injectionPersonalThreshold">, log?: (msg: string) => void): RetrievedItem[];
 export declare function preprocessClaims(items: RetrievedItem[], options: Pick<EvaMemoryConfig, "showConflicts" | "showRelations" | "dedup">): ProcessedItem[];
 export declare function formatMemoryContext(items: RetrievedItem[], maxChars: number, totalCount?: number, maxCount?: number, minScore?: number, options?: Pick<EvaMemoryConfig, "injectionFormat" | "showConflicts" | "showRelations" | "dedup">): string;
+export declare function getGBrainShadowLogPath(ownerId: string): string;
+export declare function createGBrainShadowEvent(params: {
+    phase: "recall" | "capture";
+    sessionId?: string;
+    turnId?: string;
+    providerBaseUrl: string;
+    model: string;
+    prompt?: string;
+    conversation?: Array<{
+        role: string;
+        content: string;
+    }>;
+    maxPromptChars: number;
+    status: "skipped" | "simulated" | "disabled";
+    reason?: string;
+    note: string;
+    divergenceFromAuthoritative?: string;
+    gbrainRetrieval?: {
+        attempted: boolean;
+        ok: boolean;
+        query?: string;
+        hits?: Array<{
+            slug: string;
+            preview: string;
+        }>;
+        summary?: string;
+    };
+}): GBrainShadowEvent;
+export declare function extractMessages(rawMessages: unknown[]): Array<{
+    role: string;
+    content: string;
+}>;
 declare const cortexPlugin: {
     id: string;
     name: string;
@@ -125,6 +211,42 @@ declare const cortexPlugin: {
                     type: string;
                 };
                 shadowMode: {
+                    type: string;
+                    description: string;
+                };
+                gbrainShadowEnabled: {
+                    type: string;
+                    description: string;
+                };
+                gbrainShadowCapture: {
+                    type: string;
+                    description: string;
+                };
+                gbrainShadowRecall: {
+                    type: string;
+                    description: string;
+                };
+                gbrainShadowLogEnabled: {
+                    type: string;
+                    description: string;
+                };
+                gbrainShadowMaxPromptChars: {
+                    type: string;
+                    description: string;
+                };
+                gbrainShadowLogMaxEntries: {
+                    type: string;
+                    description: string;
+                };
+                gbrainShadowProviderBaseUrl: {
+                    type: string;
+                    description: string;
+                };
+                gbrainShadowModel: {
+                    type: string;
+                    description: string;
+                };
+                gbrainShadowApiKey: {
                     type: string;
                     description: string;
                 };

@@ -70,6 +70,12 @@ cd cortex && npm install --omit=dev
 | `autoRecall` | `boolean` | `true` | Retrieve relevant memories before each agent turn |
 | `autoCapture` | `boolean` | `true` | Extract and store memories after each agent turn |
 | `shadowMode` | `boolean` | `false` | Dry-run mode — runs extraction but skips storage |
+| `gbrainShadowEnabled` | `boolean` | `false` | Enable observe-only GBrain shadow v1 scaffolding |
+| `gbrainShadowCapture` | `boolean` | `true` | Log what GBrain shadow would process on end-of-turn capture |
+| `gbrainShadowRecall` | `boolean` | `true` | Log what GBrain shadow would contribute on recall |
+| `gbrainShadowLogEnabled` | `boolean` | `true` | Persist structured timestamped shadow logs under `dist/logs/` |
+| `gbrainShadowProviderBaseUrl` | `string` | `https://api.minimax.io/v1` | Base URL for MiniMax full-model observe-only path |
+| `gbrainShadowModel` | `string` | `MiniMax-M2.7` | Model name used in GBrain shadow log metadata |
 | `retrievalBudget` | `number` | `2000` | Max token budget for retrieved memories |
 | `maxInjectionChars` | `number` | `8000` | Max characters injected into agent context |
 | `retrievalMode` | `string` | `fast` | Retrieval mode: `auto`, `fast`, or `thorough` |
@@ -125,6 +131,10 @@ Cortex operates two invisible loops around every agent conversation:
 5. **Budget enforcement** — results trimmed to token budget before injection
 
 Memories include metadata (dates, salience, categories) and are deduplicated, contradiction-checked, and relevance-scored at retrieval time.
+
+## GBrain Shadow v1
+
+This plugin now includes a narrow, safe GBrain shadow scaffold. When `gbrainShadowEnabled` is on, Cortex keeps authoritative recall/capture behavior unchanged and only writes observe-only JSONL log entries describing what a GBrain layer would have seen or contributed. Logs are timestamped, capped, and include MiniMax provider metadata so you can wire a full-model path later without taking over the hot path.
 
 ## Benchmarks
 

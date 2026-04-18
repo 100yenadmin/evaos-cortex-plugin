@@ -25,8 +25,9 @@
 
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 // Dynamic require for node:sqlite (available in Node 22+, avoids TS import issues)
 let NodeDatabaseSync: any;
@@ -45,6 +46,15 @@ interface EvaMemoryConfig {
   autoRecall: boolean;
   autoCapture: boolean;
   shadowMode: boolean;
+  gbrainShadowEnabled: boolean;
+  gbrainShadowCapture: boolean;
+  gbrainShadowRecall: boolean;
+  gbrainShadowLogEnabled: boolean;
+  gbrainShadowMaxPromptChars: number;
+  gbrainShadowLogMaxEntries: number;
+  gbrainShadowProviderBaseUrl: string;
+  gbrainShadowModel: string;
+  gbrainShadowApiKey: string;
   retrievalBudget: number;
   maxInjectionChars: number;
   maxInjectedMemories: number;
@@ -98,6 +108,34 @@ interface ProcessedItem {
   relationHint?: string;
 }
 
+interface GBrainShadowEvent {
+  schemaVersion: "gbrain-shadow-v1";
+  ts: string;
+  phase: "recall" | "capture";
+  sessionId?: string;
+  turnId?: string;
+  mode: "observe";
+  provider: {
+    baseUrl: string;
+    model: string;
+    liveCall: boolean;
+  };
+  gbrainRetrieval?: {
+    attempted: boolean;
+    ok: boolean;
+    query?: string;
+    hits?: Array<{ slug: string; preview: string }>;
+    summary?: string;
+  };
+  promptPreview?: string;
+  conversationPreview?: Array<{ role: string; content: string }>;
+  status: "skipped" | "simulated" | "disabled";
+  reason?: string;
+  note: string;
+  source: "gbrain-shadow-scaffold";
+  divergenceFromAuthoritative?: string;
+}
+
 // --- Config ---
 
 function resolveEnv(value: string): string {
@@ -112,6 +150,15 @@ function parseConfig(raw: unknown): EvaMemoryConfig {
     autoRecall: true,
     autoCapture: true,
     shadowMode: false,
+    gbrainShadowEnabled: false,
+    gbrainShadowCapture: true,
+    gbrainShadowRecall: true,
+    gbrainShadowLogEnabled: true,
+    gbrainShadowMaxPromptChars: 2000,
+    gbrainShadowLogMaxEntries: 200,
+    gbrainShadowProviderBaseUrl: "https://api.minimax.io/anthropic",
+    gbrainShadowModel: "MiniMax-M2.7-HighSpeed",
+    gbrainShadowApiKey: "",
     retrievalBudget: 2000,
     maxInjectionChars: 8000,
     maxInjectedMemories: 8,
@@ -143,6 +190,15 @@ function parseConfig(raw: unknown): EvaMemoryConfig {
     autoRecall: c.autoRecall !== false,
     autoCapture: c.autoCapture !== false,
     shadowMode: c.shadowMode === true,
+    gbrainShadowEnabled: c.gbrainShadowEnabled === true,
+    gbrainShadowCapture: c.gbrainShadowCapture !== false,
+    gbrainShadowRecall: c.gbrainShadowRecall !== false,
+    gbrainShadowLogEnabled: c.gbrainShadowLogEnabled !== false,
+    gbrainShadowMaxPromptChars: typeof c.gbrainShadowMaxPromptChars === "number" ? c.gbrainShadowMaxPromptChars : defaults.gbrainShadowMaxPromptChars,
+    gbrainShadowLogMaxEntries: typeof c.gbrainShadowLogMaxEntries === "number" ? c.gbrainShadowLogMaxEntries : defaults.gbrainShadowLogMaxEntries,
+    gbrainShadowProviderBaseUrl: typeof c.gbrainShadowProviderBaseUrl === "string" ? resolveEnv(c.gbrainShadowProviderBaseUrl) : defaults.gbrainShadowProviderBaseUrl,
+    gbrainShadowModel: typeof c.gbrainShadowModel === "string" && c.gbrainShadowModel ? c.gbrainShadowModel : defaults.gbrainShadowModel,
+    gbrainShadowApiKey: typeof c.gbrainShadowApiKey === "string" ? resolveEnv(c.gbrainShadowApiKey) : defaults.gbrainShadowApiKey,
     retrievalBudget: typeof c.retrievalBudget === "number" ? c.retrievalBudget : defaults.retrievalBudget,
     maxInjectionChars: typeof c.maxInjectionChars === "number" ? c.maxInjectionChars : defaults.maxInjectionChars,
     maxInjectedMemories: typeof c.maxInjectedMemories === "number" ? c.maxInjectedMemories : defaults.maxInjectedMemories,
@@ -832,7 +888,7 @@ const TRIVIAL_PATTERNS = /^(hi|hello|hey|thanks|ok|yes|no|sure|bye|good morning|
 // Sub-agent completion events and runtime system events should not trigger memory retrieval
 const SYSTEM_EVENT_PATTERNS = /\[Internal task completion event\]|<<<BEGIN_UNTRUSTED_CHILD_RESULT>>>|source: subagent|type: subagent task|^\[.*\] Exec (?:completed|failed)|^\[.*\] OpenClaw runtime context/m;
 
-function isMemoryRelevant(prompt: string): boolean {
+export function isMemoryRelevant(prompt: string): boolean {
   if (!prompt || prompt.length < 3) return false;
   if (TRIVIAL_PATTERNS.test(prompt.trim())) return false;
   // Skip sub-agent completion events and runtime system events
@@ -851,6 +907,7 @@ type HookLaneContext = {
   runKind?: HookRunKind;
   isHeartbeat?: boolean;
   sessionKey?: string;
+  trigger?: string;
 };
 
 function resolveHookRunKind(ctx?: HookLaneContext): HookRunKind {
@@ -869,12 +926,70 @@ function isBootPrompt(prompt: string | undefined): boolean {
   return /\bBOOT\.md\b/i.test(prompt) || /\bboot check\b/i.test(prompt) || /\bpost-restart\b/i.test(prompt);
 }
 
-function shouldSkipMemoryInjection(prompt: string | undefined, ctx?: HookLaneContext): { skip: boolean; lane: string } {
+const SYNTHETIC_TURN_PATTERNS: RegExp[] = [
+  /^\s*\[PLAN_DECISION\]:/im,
+  /^\s*\[QUESTION_ANSWER\]:/im,
+  /^\s*\(session bootstrap\)\s*$/im,
+  /^\s*HEARTBEAT_OK\b/im,
+  /Read HEARTBEAT\.md if it exists/im,
+];
+
+function extractMessageText(message: unknown): string {
+  if (!message || typeof message !== "object") return "";
+  const m = message as Record<string, unknown>;
+  if (typeof m.content === "string") return m.content;
+  if (!Array.isArray(m.content)) return "";
+  const parts: string[] = [];
+  for (const block of m.content) {
+    if (!block || typeof block !== "object") continue;
+    const text = (block as Record<string, unknown>).text;
+    if (typeof text === "string" && text.trim()) parts.push(text);
+  }
+  return parts.join("\n");
+}
+
+function isSyntheticPromptText(prompt: string | undefined): boolean {
+  if (!prompt) return false;
+  if (isBootPrompt(prompt) || SYSTEM_EVENT_PATTERNS.test(prompt)) return true;
+  return SYNTHETIC_TURN_PATTERNS.some((pattern) => pattern.test(prompt));
+}
+
+function hasSyntheticUserTurn(messages: unknown[] | undefined): boolean {
+  if (!Array.isArray(messages) || messages.length === 0) return false;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object") continue;
+    const role = (message as Record<string, unknown>).role;
+    if (role !== "user") continue;
+    const text = extractMessageText(message);
+    return isSyntheticPromptText(text);
+  }
+  return false;
+}
+
+export function classifyTurnForMemory(
+  prompt: string | undefined,
+  messages: unknown[] | undefined,
+  ctx?: HookLaneContext,
+): { allow: boolean; reason: string } {
   const runKind = resolveHookRunKind(ctx);
-  if (ctx?.isHeartbeat) return { skip: true, lane: "heartbeat" };
-  if (runKind !== "main") return { skip: true, lane: runKind };
-  if (isBootPrompt(prompt)) return { skip: true, lane: "boot" };
-  return { skip: false, lane: runKind };
+  if (ctx?.isHeartbeat) return { allow: false, reason: "heartbeat" };
+  if (runKind !== "main") return { allow: false, reason: runKind };
+  if (ctx?.trigger === "system" || ctx?.trigger === "cron" || ctx?.trigger === "heartbeat") {
+    return { allow: false, reason: ctx.trigger };
+  }
+  if (isSyntheticPromptText(prompt)) return { allow: false, reason: "synthetic-prompt" };
+  if (hasSyntheticUserTurn(messages)) return { allow: false, reason: "synthetic-user-turn" };
+  return { allow: true, reason: "real-user-turn" };
+}
+
+function shouldSkipMemoryInjection(
+  prompt: string | undefined,
+  messages: unknown[] | undefined,
+  ctx?: HookLaneContext,
+): { skip: boolean; lane: string } {
+  const decision = classifyTurnForMemory(prompt, messages, ctx);
+  return { skip: !decision.allow, lane: decision.reason };
 }
 
 // --- Conversational junk pre-filter ---
@@ -1316,7 +1431,127 @@ export function formatMemoryContext(
 
 // --- Message extraction (with junk filter) ---
 
-function extractMessages(rawMessages: unknown[]): Array<{ role: string; content: string }> {
+function clampText(text: string, maxChars: number): string {
+  if (maxChars <= 0) return "";
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function sanitizeShadowLogKey(value: string): string {
+  const cleaned = (value || "default").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
+  return cleaned || "default";
+}
+
+function buildGBrainShadowLogPath(ownerId: string): string {
+  const pluginDir = typeof __dirname === "string" ? __dirname : dirname(__filename);
+  const safeOwnerId = sanitizeShadowLogKey(ownerId);
+  return join(pluginDir, "shadow-logs", `gbrain-shadow-${safeOwnerId}.jsonl`);
+}
+
+function appendGBrainShadowLog(ownerId: string, maxEntries: number, event: GBrainShadowEvent): void {
+  try {
+    const logPath = buildGBrainShadowLogPath(ownerId);
+    const logDir = dirname(logPath);
+    if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+
+    const line = `${JSON.stringify(event)}\n`;
+    appendFileSync(logPath, line, "utf8");
+
+    if (maxEntries > 0) {
+      try {
+        const lines = readFileSync(logPath, "utf8").split("\n").filter(Boolean);
+        if (lines.length > maxEntries) {
+          writeFileSync(logPath, `${lines.slice(-maxEntries).join("\n")}\n`, "utf8");
+        }
+      } catch {
+        // best-effort retention trim only
+      }
+    }
+  } catch {
+    // Observe-only logging must never break authoritative paths.
+  }
+}
+
+export function getGBrainShadowLogPath(ownerId: string): string {
+  return buildGBrainShadowLogPath(ownerId);
+}
+
+export function createGBrainShadowEvent(
+  params: {
+    phase: "recall" | "capture";
+    sessionId?: string;
+    turnId?: string;
+    providerBaseUrl: string;
+    model: string;
+    prompt?: string;
+    conversation?: Array<{ role: string; content: string }>;
+    maxPromptChars: number;
+    status: "skipped" | "simulated" | "disabled";
+    reason?: string;
+    note: string;
+    divergenceFromAuthoritative?: string;
+    gbrainRetrieval?: { attempted: boolean; ok: boolean; query?: string; hits?: Array<{ slug: string; preview: string }>; summary?: string };
+  },
+): GBrainShadowEvent {
+  return {
+    schemaVersion: "gbrain-shadow-v1",
+    ts: new Date().toISOString(),
+    phase: params.phase,
+    sessionId: params.sessionId,
+    turnId: params.turnId,
+    mode: "observe",
+    provider: {
+      baseUrl: params.providerBaseUrl,
+      model: params.model,
+      liveCall: false,
+    },
+    gbrainRetrieval: params.gbrainRetrieval,
+    promptPreview: params.prompt ? clampText(params.prompt, params.maxPromptChars) : undefined,
+    conversationPreview: params.conversation?.map((msg) => ({
+      role: msg.role,
+      content: clampText(msg.content, Math.max(80, Math.floor(params.maxPromptChars / 2))),
+    })),
+    status: params.status,
+    reason: params.reason,
+    note: params.note,
+    source: "gbrain-shadow-scaffold",
+    divergenceFromAuthoritative: params.divergenceFromAuthoritative,
+  };
+}
+
+function maybeLogGBrainShadowEvent(cfg: EvaMemoryConfig, event: GBrainShadowEvent): void {
+  if (!cfg.gbrainShadowEnabled || !cfg.gbrainShadowLogEnabled) return;
+  appendGBrainShadowLog(cfg.ownerId, cfg.gbrainShadowLogMaxEntries, event);
+}
+
+function runGBrainShadowSearch(query: string, limit = 3): { attempted: boolean; ok: boolean; query?: string; hits?: Array<{ slug: string; preview: string }>; summary?: string } {
+  const q = clampText(query.trim(), 240);
+  if (!q) return { attempted: false, ok: false, summary: "Empty query." };
+  try {
+    const res = spawnSync("bun", ["run", "src/cli.ts", "search", q, "--limit", String(limit)], {
+      cwd: "/Users/lume/gbrain",
+      encoding: "utf8",
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
+    });
+    if (res.status !== 0) {
+      return { attempted: true, ok: false, query: q, summary: (res.stderr || res.stdout || `exit ${res.status}`).trim().slice(0, 240) };
+    }
+    const lines = (res.stdout || "").split("\n").map((x) => x.trim()).filter(Boolean).slice(0, limit);
+    const hits = lines.map((line) => {
+      const match = line.match(/^\[[^\]]+\]\s+([^\s]+)\s+--\s+(.*)$/);
+      return {
+        slug: match?.[1] || line.slice(0, 80),
+        preview: clampText(match?.[2] || line, 160),
+      };
+    });
+    return { attempted: true, ok: true, query: q, hits, summary: hits.length ? `Found ${hits.length} doc hits.` : "No doc hits." };
+  } catch (err) {
+    return { attempted: true, ok: false, query: q, summary: err instanceof Error ? err.message.slice(0, 240) : String(err).slice(0, 240) };
+  }
+}
+
+export function extractMessages(rawMessages: unknown[]): Array<{ role: string; content: string }> {
   const result: Array<{ role: string; content: string }> = [];
 
   for (const msg of rawMessages.slice(-10)) {
@@ -1353,6 +1588,9 @@ function extractMessages(rawMessages: unknown[]): Array<{ role: string; content:
     // Skip user messages matching trivial/continuation patterns
     if (role === "user" && TRIVIAL_CAPTURE_PATTERNS.some((p) => p.test(text))) continue;
 
+    // Skip synthetic control/system wrapper turns even when they entered as user text
+    if (isSyntheticPromptText(text)) continue;
+
     result.push({ role, content: text });
   }
 
@@ -1379,6 +1617,15 @@ const cortexPlugin = {
         autoRecall: { type: "boolean" },
         autoCapture: { type: "boolean" },
         shadowMode: { type: "boolean", description: "Shadow mode — capture runs extraction but skips storage (dry-run)" },
+        gbrainShadowEnabled: { type: "boolean", description: "Enable GBrain shadow observe-only scaffolding (default: false)" },
+        gbrainShadowCapture: { type: "boolean", description: "Run observe-only GBrain shadow logging on capture path (default: true)" },
+        gbrainShadowRecall: { type: "boolean", description: "Run observe-only GBrain shadow logging on recall path (default: true)" },
+        gbrainShadowLogEnabled: { type: "boolean", description: "Persist timestamped GBrain shadow contribution logs (default: true)" },
+        gbrainShadowMaxPromptChars: { type: "number", description: "Max chars to keep in GBrain shadow previews (default: 2000)" },
+        gbrainShadowLogMaxEntries: { type: "number", description: "Max shadow log entries to retain per owner (default: 200)" },
+        gbrainShadowProviderBaseUrl: { type: "string", description: "Observe-only GBrain shadow provider base URL metadata or optional live shadow endpoint (default: https://api.minimax.io/anthropic)" },
+        gbrainShadowModel: { type: "string", description: "Observe-only GBrain shadow model metadata or optional live shadow model (default: MiniMax-M2.7-HighSpeed)" },
+        gbrainShadowApiKey: { type: "string", description: "Reserved for future real GBrain shadow execution; unused in the current scaffold" },
         retrievalBudget: { type: "number" },
         maxInjectionChars: { type: "number" },
         maxInjectedMemories: { type: "number", description: "Max memories to inject per turn (default: 8)" },
@@ -1434,7 +1681,7 @@ const cortexPlugin = {
     }
 
     api.logger.info(
-      `cortex: registered (cortex=${cfg.cortexUrl}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode})`,
+      `cortex: registered (cortex=${cfg.cortexUrl}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode}, gbrainShadow=${cfg.gbrainShadowEnabled ? "on" : "off"}, gbrainModel=${cfg.gbrainShadowModel})`,
     );
 
     // -------------------------------------------------------------------------
@@ -1838,7 +2085,10 @@ const cortexPlugin = {
       const startMs = Date.now();
       const blocks: string[] = [];
 
-      const laneDecision = shouldSkipMemoryInjection(event.prompt, ctx as HookLaneContext);
+      const laneDecision = shouldSkipMemoryInjection(event.prompt, event.messages, {
+        ...(ctx as HookLaneContext),
+        trigger: (ctx as { trigger?: string }).trigger,
+      });
       if (laneDecision.skip) {
         api.logger.info(`cortex: skipping recall injection for lane=${laneDecision.lane}`);
         return;
@@ -1846,7 +2096,11 @@ const cortexPlugin = {
 
       // --- Fetch contextual memories (+ optional cornerstones) ---
       if (cfg.autoRecall) {
-        const doRetrieve = event.prompt && isMemoryRelevant(event.prompt);
+        const turnDecision = classifyTurnForMemory(event.prompt, event.messages, {
+          ...(ctx as HookLaneContext),
+          trigger: (ctx as { trigger?: string }).trigger,
+        });
+        const doRetrieve = turnDecision.allow && event.prompt && isMemoryRelevant(event.prompt);
         const doCornerstones = cfg.injectCornerstones; // default false — cornerstones in SOUL.md
 
         // --- Memory retrieval (server-first, local fallback) ---
@@ -1924,6 +2178,24 @@ const cortexPlugin = {
           const screened = cfg.enableInjectionScreening
             ? screenInjectionCandidates(filtered, event.prompt ?? "", cfg, (msg) => api.logger.info(msg))
             : filtered;
+
+          if (cfg.gbrainShadowEnabled && cfg.gbrainShadowRecall) {
+            const gbrainRetrieval = runGBrainShadowSearch(event.prompt ?? "", 3);
+            maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
+              phase: "recall",
+              sessionId: ctx.sessionKey,
+              turnId: ctx.sessionKey,
+              providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
+              model: cfg.gbrainShadowModel,
+              prompt: event.prompt,
+              maxPromptChars: cfg.gbrainShadowMaxPromptChars,
+              status: "simulated",
+              note: "Observe-only recall seam. Logged real GBrain docs retrieval without affecting authoritative injection.",
+              divergenceFromAuthoritative: "GBrain shadow search runs for comparison only. Cortex remains the authoritative injected path.",
+              gbrainRetrieval,
+            }));
+          }
+
           const context = formatMemoryContext(
             screened,
             cfg.maxInjectionChars,
@@ -1949,6 +2221,22 @@ const cortexPlugin = {
               api.logger.warn(`cortex: retrieval took ${elapsed}ms, skipping memory injection (cornerstones still injected)`);
             }
           }
+        } else if (cfg.gbrainShadowEnabled && cfg.gbrainShadowRecall && event.prompt) {
+          const gbrainRetrieval = runGBrainShadowSearch(event.prompt ?? "", 3);
+          maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
+            phase: "recall",
+            sessionId: ctx.sessionKey,
+            turnId: ctx.sessionKey,
+            providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
+            model: cfg.gbrainShadowModel,
+            prompt: event.prompt,
+            maxPromptChars: cfg.gbrainShadowMaxPromptChars,
+            status: "skipped",
+            reason: "no-memory-items",
+            note: "Observe-only recall seam ran, but authoritative recall returned no items.",
+            divergenceFromAuthoritative: "GBrain shadow search still ran for comparison, but nothing was injected because Cortex had no items.",
+            gbrainRetrieval,
+          }));
         }
       }
 
@@ -1966,8 +2254,12 @@ const cortexPlugin = {
         // Skip noisy sessions (subagents, crons, isolated, heartbeats, boot checks)
         const key = ctx.sessionKey ?? "";
         if (key.includes(":subagent:") || key.includes(":cron:") || key.includes(":isolated:")) return;
-        const hookCtx = ctx as HookLaneContext;
-        if (hookCtx.isHeartbeat) return;
+        const hookCtx = {
+          ...(ctx as HookLaneContext),
+          trigger: (ctx as { trigger?: string }).trigger,
+        };
+        const turnDecision = classifyTurnForMemory(undefined, event.messages, hookCtx);
+        if (!turnDecision.allow) return;
 
         const messages = extractMessages(event.messages);
 
@@ -1978,6 +2270,23 @@ const cortexPlugin = {
         if (isBootPrompt(joined) || /HEARTBEAT_OK/i.test(joined) || /Read HEARTBEAT\.md if it exists/i.test(joined)) return;
         // Skip system events (sub-agent completions, exec notifications) — not worth extracting
         if (SYSTEM_EVENT_PATTERNS.test(joined)) return;
+
+        if (cfg.gbrainShadowEnabled && cfg.gbrainShadowCapture) {
+          const gbrainRetrieval = runGBrainShadowSearch(messages.map((m) => m.content).join(" "), 3);
+          maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
+            phase: "capture",
+            sessionId: ctx.sessionKey,
+            turnId: ctx.sessionKey,
+            providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
+            model: cfg.gbrainShadowModel,
+            conversation: messages,
+            maxPromptChars: cfg.gbrainShadowMaxPromptChars,
+            status: "simulated",
+            note: "Observe-only capture seam. Logged real GBrain docs retrieval metadata without affecting authoritative storage.",
+            divergenceFromAuthoritative: "GBrain shadow search runs for comparison only. Cortex remains the authoritative storage path.",
+            gbrainRetrieval,
+          }));
+        }
 
         // Fire and forget — no await, no blocking
         const capturePromise = client.remember(messages, ctx.sessionKey, cfg.shadowMode);

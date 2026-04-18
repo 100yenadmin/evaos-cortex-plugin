@@ -48,6 +48,42 @@
         "type": "boolean",
         "description": "Shadow mode \u2014 capture runs extraction but skips storage (dry-run, default: false)"
       },
+      "gbrainShadowEnabled": {
+        "type": "boolean",
+        "description": "Enable GBrain shadow v1 observe-only scaffolding (default: false)"
+      },
+      "gbrainShadowCapture": {
+        "type": "boolean",
+        "description": "Enable observe-only GBrain shadow logging on capture path (default: true)"
+      },
+      "gbrainShadowRecall": {
+        "type": "boolean",
+        "description": "Enable observe-only GBrain shadow logging on recall path (default: true)"
+      },
+      "gbrainShadowLogEnabled": {
+        "type": "boolean",
+        "description": "Persist structured timestamped GBrain shadow logs (default: true)"
+      },
+      "gbrainShadowMaxPromptChars": {
+        "type": "number",
+        "description": "Max chars to keep in GBrain shadow previews (default: 2000)"
+      },
+      "gbrainShadowLogMaxEntries": {
+        "type": "number",
+        "description": "Max shadow log entries retained per owner (default: 200)"
+      },
+      "gbrainShadowProviderBaseUrl": {
+        "type": "string",
+        "description": "Observe-only GBrain shadow provider base URL for MiniMax full-model path"
+      },
+      "gbrainShadowModel": {
+        "type": "string",
+        "description": "Observe-only GBrain shadow model name (default: MiniMax-M2.7)"
+      },
+      "gbrainShadowApiKey": {
+        "type": "string",
+        "description": "Optional API key for the observe-only GBrain shadow provider path"
+      },
       "retrievalBudget": {
         "type": "number",
         "description": "Max token budget for retrieved memories (default: 2000)"
