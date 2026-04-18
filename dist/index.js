@@ -743,13 +743,15 @@ function isBootPrompt(prompt) {
     return /\bBOOT\.md\b/i.test(prompt) || /\bboot check\b/i.test(prompt) || /\bpost-restart\b/i.test(prompt);
 }
 const SYNTHETIC_TURN_PATTERNS = [
-    /^\s*\[PLAN_DECISION\]:/im,
-    /^\s*\[QUESTION_ANSWER\]:/im,
-    /^\s*\(session bootstrap\)\s*$/im,
-    /^\s*HEARTBEAT_OK\b/im,
-    /Read HEARTBEAT\.md if it exists/im,
+    /^\s*\[PLAN_DECISION\]:/i,
+    /^\s*\[QUESTION_ANSWER\]:/i,
+    /^\s*\(session bootstrap\)\s*$/i,
+    /^\s*HEARTBEAT_OK\b/i,
+    /^\s*Read HEARTBEAT\.md if it exists\s*$/i,
 ];
 function extractMessageText(message) {
+    // Only text blocks are concatenated here. Non-text blocks like images/attachments,
+    // or empty content arrays, intentionally collapse to an empty string.
     if (!message || typeof message !== "object")
         return "";
     const m = message;
@@ -777,7 +779,7 @@ function isSyntheticPromptText(prompt) {
 function hasSyntheticUserTurn(messages) {
     if (!Array.isArray(messages) || messages.length === 0)
         return false;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
+    for (let index = Math.max(0, messages.length - 10); index < messages.length; index += 1) {
         const message = messages[index];
         if (!message || typeof message !== "object")
             continue;
@@ -793,7 +795,7 @@ function classifyTurnForMemory(prompt, messages, ctx) {
     const runKind = resolveHookRunKind(ctx);
     if (ctx?.isHeartbeat)
         return { allow: false, reason: "heartbeat" };
-    if (runKind !== "main")
+    if (runKind !== "main" && runKind !== "unknown")
         return { allow: false, reason: runKind };
     if (ctx?.trigger === "system" || ctx?.trigger === "cron" || ctx?.trigger === "heartbeat") {
         return { allow: false, reason: ctx.trigger };
@@ -1228,7 +1230,7 @@ function createGBrainShadowEvent(params) {
         promptPreview: params.prompt ? clampText(params.prompt, params.maxPromptChars) : undefined,
         conversationPreview: params.conversation?.map((msg) => ({
             role: msg.role,
-            content: clampText(msg.content, Math.max(80, Math.floor(params.maxPromptChars / 2))),
+            content: clampText(msg.content, Math.max(0, Math.floor(params.maxPromptChars / 2))),
         })),
         status: params.status,
         reason: params.reason,
@@ -1861,8 +1863,11 @@ const cortexPlugin = {
                 const key = ctx.sessionKey ?? "";
                 if (key.includes(":subagent:") || key.includes(":cron:") || key.includes(":isolated:"))
                     return;
+                const rawHookCtx = ctx;
                 const hookCtx = {
-                    ...ctx,
+                    sessionKey: rawHookCtx.sessionKey,
+                    runKind: rawHookCtx.runKind,
+                    isHeartbeat: rawHookCtx.isHeartbeat,
                     trigger: ctx.trigger,
                 };
                 const turnDecision = classifyTurnForMemory(undefined, event.messages, hookCtx);

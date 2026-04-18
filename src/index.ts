@@ -918,14 +918,16 @@ function isBootPrompt(prompt: string | undefined): boolean {
 }
 
 const SYNTHETIC_TURN_PATTERNS: RegExp[] = [
-  /^\s*\[PLAN_DECISION\]:/im,
-  /^\s*\[QUESTION_ANSWER\]:/im,
-  /^\s*\(session bootstrap\)\s*$/im,
-  /^\s*HEARTBEAT_OK\b/im,
-  /Read HEARTBEAT\.md if it exists/im,
+  /^\s*\[PLAN_DECISION\]:/i,
+  /^\s*\[QUESTION_ANSWER\]:/i,
+  /^\s*\(session bootstrap\)\s*$/i,
+  /^\s*HEARTBEAT_OK\b/i,
+  /^\s*Read HEARTBEAT\.md if it exists\s*$/i,
 ];
 
 function extractMessageText(message: unknown): string {
+  // Only text blocks are concatenated here. Non-text blocks like images/attachments,
+  // or empty content arrays, intentionally collapse to an empty string.
   if (!message || typeof message !== "object") return "";
   const m = message as Record<string, unknown>;
   if (typeof m.content === "string") return m.content;
@@ -947,7 +949,7 @@ function isSyntheticPromptText(prompt: string | undefined): boolean {
 
 function hasSyntheticUserTurn(messages: unknown[] | undefined): boolean {
   if (!Array.isArray(messages) || messages.length === 0) return false;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
+  for (let index = Math.max(0, messages.length - 10); index < messages.length; index += 1) {
     const message = messages[index];
     if (!message || typeof message !== "object") continue;
     const role = (message as Record<string, unknown>).role;
@@ -965,7 +967,7 @@ export function classifyTurnForMemory(
 ): { allow: boolean; reason: string } {
   const runKind = resolveHookRunKind(ctx);
   if (ctx?.isHeartbeat) return { allow: false, reason: "heartbeat" };
-  if (runKind !== "main") return { allow: false, reason: runKind };
+  if (runKind !== "main" && runKind !== "unknown") return { allow: false, reason: runKind };
   if (ctx?.trigger === "system" || ctx?.trigger === "cron" || ctx?.trigger === "heartbeat") {
     return { allow: false, reason: ctx.trigger };
   }
@@ -1496,7 +1498,7 @@ export function createGBrainShadowEvent(
     promptPreview: params.prompt ? clampText(params.prompt, params.maxPromptChars) : undefined,
     conversationPreview: params.conversation?.map((msg) => ({
       role: msg.role,
-      content: clampText(msg.content, Math.max(80, Math.floor(params.maxPromptChars / 2))),
+      content: clampText(msg.content, Math.max(0, Math.floor(params.maxPromptChars / 2))),
     })),
     status: params.status,
     reason: params.reason,
@@ -2196,8 +2198,11 @@ const cortexPlugin = {
         // Skip noisy sessions (subagents, crons, isolated, heartbeats, boot checks)
         const key = ctx.sessionKey ?? "";
         if (key.includes(":subagent:") || key.includes(":cron:") || key.includes(":isolated:")) return;
-        const hookCtx = {
-          ...(ctx as HookLaneContext),
+        const rawHookCtx = ctx as HookLaneContext;
+        const hookCtx: HookLaneContext = {
+          sessionKey: rawHookCtx.sessionKey,
+          runKind: rawHookCtx.runKind,
+          isHeartbeat: rawHookCtx.isHeartbeat,
           trigger: (ctx as { trigger?: string }).trigger,
         };
         const turnDecision = classifyTurnForMemory(undefined, event.messages, hookCtx);
