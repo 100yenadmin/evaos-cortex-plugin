@@ -24,14 +24,20 @@
  *        cortex_add_open_loop, cortex_resolve_open_loop, cortex_list_open_loops
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isMemoryRelevant = isMemoryRelevant;
+exports.classifyTurnForMemory = classifyTurnForMemory;
 exports.parseEvaMemoryConfig = parseEvaMemoryConfig;
 exports.detectInjectionMode = detectInjectionMode;
 exports.screenInjectionCandidates = screenInjectionCandidates;
 exports.preprocessClaims = preprocessClaims;
 exports.formatMemoryContext = formatMemoryContext;
+exports.getGBrainShadowLogPath = getGBrainShadowLogPath;
+exports.createGBrainShadowEvent = createGBrainShadowEvent;
+exports.extractMessages = extractMessages;
 const typebox_1 = require("@sinclair/typebox");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
+const node_child_process_1 = require("node:child_process");
 // Dynamic require for node:sqlite (available in Node 22+, avoids TS import issues)
 let NodeDatabaseSync;
 try {
@@ -52,6 +58,15 @@ function parseConfig(raw) {
         autoRecall: true,
         autoCapture: true,
         shadowMode: false,
+        gbrainShadowEnabled: false,
+        gbrainShadowCapture: true,
+        gbrainShadowRecall: true,
+        gbrainShadowLogEnabled: true,
+        gbrainShadowMaxPromptChars: 2000,
+        gbrainShadowLogMaxEntries: 200,
+        gbrainShadowProviderBaseUrl: "https://api.minimax.io/anthropic",
+        gbrainShadowModel: "MiniMax-M2.7-HighSpeed",
+        gbrainShadowApiKey: "",
         retrievalBudget: 2000,
         maxInjectionChars: 8000,
         maxInjectedMemories: 8,
@@ -84,6 +99,15 @@ function parseConfig(raw) {
         autoRecall: c.autoRecall !== false,
         autoCapture: c.autoCapture !== false,
         shadowMode: c.shadowMode === true,
+        gbrainShadowEnabled: c.gbrainShadowEnabled === true,
+        gbrainShadowCapture: c.gbrainShadowCapture !== false,
+        gbrainShadowRecall: c.gbrainShadowRecall !== false,
+        gbrainShadowLogEnabled: c.gbrainShadowLogEnabled !== false,
+        gbrainShadowMaxPromptChars: typeof c.gbrainShadowMaxPromptChars === "number" ? c.gbrainShadowMaxPromptChars : defaults.gbrainShadowMaxPromptChars,
+        gbrainShadowLogMaxEntries: typeof c.gbrainShadowLogMaxEntries === "number" ? c.gbrainShadowLogMaxEntries : defaults.gbrainShadowLogMaxEntries,
+        gbrainShadowProviderBaseUrl: typeof c.gbrainShadowProviderBaseUrl === "string" ? resolveEnv(c.gbrainShadowProviderBaseUrl) : defaults.gbrainShadowProviderBaseUrl,
+        gbrainShadowModel: typeof c.gbrainShadowModel === "string" && c.gbrainShadowModel ? c.gbrainShadowModel : defaults.gbrainShadowModel,
+        gbrainShadowApiKey: typeof c.gbrainShadowApiKey === "string" ? resolveEnv(c.gbrainShadowApiKey) : defaults.gbrainShadowApiKey,
         retrievalBudget: typeof c.retrievalBudget === "number" ? c.retrievalBudget : defaults.retrievalBudget,
         maxInjectionChars: typeof c.maxInjectionChars === "number" ? c.maxInjectionChars : defaults.maxInjectionChars,
         maxInjectedMemories: typeof c.maxInjectedMemories === "number" ? c.maxInjectedMemories : defaults.maxInjectedMemories,
@@ -719,15 +743,71 @@ function isBootPrompt(prompt) {
         return false;
     return /\bBOOT\.md\b/i.test(prompt) || /\bboot check\b/i.test(prompt) || /\bpost-restart\b/i.test(prompt);
 }
-function shouldSkipMemoryInjection(prompt, ctx) {
+const SYNTHETIC_TURN_PATTERNS = [
+    /^\s*\[PLAN_DECISION\]:/im,
+    /^\s*\[QUESTION_ANSWER\]:/im,
+    /^\s*\(session bootstrap\)\s*$/im,
+    /^\s*HEARTBEAT_OK\b/im,
+    /Read HEARTBEAT\.md if it exists/im,
+];
+function extractMessageText(message) {
+    if (!message || typeof message !== "object")
+        return "";
+    const m = message;
+    if (typeof m.content === "string")
+        return m.content;
+    if (!Array.isArray(m.content))
+        return "";
+    const parts = [];
+    for (const block of m.content) {
+        if (!block || typeof block !== "object")
+            continue;
+        const text = block.text;
+        if (typeof text === "string" && text.trim())
+            parts.push(text);
+    }
+    return parts.join("\n");
+}
+function isSyntheticPromptText(prompt) {
+    if (!prompt)
+        return false;
+    if (isBootPrompt(prompt) || SYSTEM_EVENT_PATTERNS.test(prompt))
+        return true;
+    return SYNTHETIC_TURN_PATTERNS.some((pattern) => pattern.test(prompt));
+}
+function hasSyntheticUserTurn(messages) {
+    if (!Array.isArray(messages) || messages.length === 0)
+        return false;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (!message || typeof message !== "object")
+            continue;
+        const role = message.role;
+        if (role !== "user")
+            continue;
+        const text = extractMessageText(message);
+        return isSyntheticPromptText(text);
+    }
+    return false;
+}
+function classifyTurnForMemory(prompt, messages, ctx) {
     const runKind = resolveHookRunKind(ctx);
     if (ctx?.isHeartbeat)
-        return { skip: true, lane: "heartbeat" };
+        return { allow: false, reason: "heartbeat" };
     if (runKind !== "main")
-        return { skip: true, lane: runKind };
-    if (isBootPrompt(prompt))
-        return { skip: true, lane: "boot" };
-    return { skip: false, lane: runKind };
+        return { allow: false, reason: runKind };
+    if (ctx?.trigger === "system" || ctx?.trigger === "cron" || ctx?.trigger === "heartbeat") {
+        return { allow: false, reason: ctx.trigger };
+    }
+    if (isSyntheticPromptText(prompt))
+        return { allow: false, reason: "synthetic-prompt" };
+    if (hasSyntheticUserTurn(messages))
+        return { allow: false, reason: "synthetic-user-turn" };
+    return { allow: true, reason: "real-user-turn" };
+}
+function shouldSkipMemoryInjection(prompt, messages, ctx) {
+    const decision = classifyTurnForMemory(prompt, messages, ctx);
+    return { skip: !decision.allow, lane: decision.reason };
 }
 // --- Conversational junk pre-filter ---
 // Messages matching any of these patterns are dropped from the capture payload.
@@ -1091,6 +1171,108 @@ function formatMemoryContext(items, maxChars, totalCount = items.length, maxCoun
         : formatMemoryContextV1(items, maxChars, totalCount, maxCount, minScore);
 }
 // --- Message extraction (with junk filter) ---
+function clampText(text, maxChars) {
+    if (maxChars <= 0)
+        return "";
+    if (text.length <= maxChars)
+        return text;
+    return `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+function sanitizeShadowLogKey(value) {
+    const cleaned = (value || "default").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
+    return cleaned || "default";
+}
+function buildGBrainShadowLogPath(ownerId) {
+    const pluginDir = typeof __dirname === "string" ? __dirname : (0, node_path_1.dirname)(__filename);
+    const safeOwnerId = sanitizeShadowLogKey(ownerId);
+    return (0, node_path_1.join)(pluginDir, "shadow-logs", `gbrain-shadow-${safeOwnerId}.jsonl`);
+}
+function appendGBrainShadowLog(ownerId, maxEntries, event) {
+    try {
+        const logPath = buildGBrainShadowLogPath(ownerId);
+        const logDir = (0, node_path_1.dirname)(logPath);
+        if (!(0, node_fs_1.existsSync)(logDir))
+            (0, node_fs_1.mkdirSync)(logDir, { recursive: true });
+        const line = `${JSON.stringify(event)}\n`;
+        (0, node_fs_1.appendFileSync)(logPath, line, "utf8");
+        if (maxEntries > 0) {
+            try {
+                const lines = (0, node_fs_1.readFileSync)(logPath, "utf8").split("\n").filter(Boolean);
+                if (lines.length > maxEntries) {
+                    (0, node_fs_1.writeFileSync)(logPath, `${lines.slice(-maxEntries).join("\n")}\n`, "utf8");
+                }
+            }
+            catch {
+                // best-effort retention trim only
+            }
+        }
+    }
+    catch {
+        // Observe-only logging must never break authoritative paths.
+    }
+}
+function getGBrainShadowLogPath(ownerId) {
+    return buildGBrainShadowLogPath(ownerId);
+}
+function createGBrainShadowEvent(params) {
+    return {
+        schemaVersion: "gbrain-shadow-v1",
+        ts: new Date().toISOString(),
+        phase: params.phase,
+        sessionId: params.sessionId,
+        turnId: params.turnId,
+        mode: "observe",
+        provider: {
+            baseUrl: params.providerBaseUrl,
+            model: params.model,
+            liveCall: false,
+        },
+        gbrainRetrieval: params.gbrainRetrieval,
+        promptPreview: params.prompt ? clampText(params.prompt, params.maxPromptChars) : undefined,
+        conversationPreview: params.conversation?.map((msg) => ({
+            role: msg.role,
+            content: clampText(msg.content, Math.max(80, Math.floor(params.maxPromptChars / 2))),
+        })),
+        status: params.status,
+        reason: params.reason,
+        note: params.note,
+        source: "gbrain-shadow-scaffold",
+        divergenceFromAuthoritative: params.divergenceFromAuthoritative,
+    };
+}
+function maybeLogGBrainShadowEvent(cfg, event) {
+    if (!cfg.gbrainShadowEnabled || !cfg.gbrainShadowLogEnabled)
+        return;
+    appendGBrainShadowLog(cfg.ownerId, cfg.gbrainShadowLogMaxEntries, event);
+}
+function runGBrainShadowSearch(query, limit = 3) {
+    const q = clampText(query.trim(), 240);
+    if (!q)
+        return { attempted: false, ok: false, summary: "Empty query." };
+    try {
+        const res = (0, node_child_process_1.spawnSync)("bun", ["run", "src/cli.ts", "search", q, "--limit", String(limit)], {
+            cwd: "/Users/lume/gbrain",
+            encoding: "utf8",
+            timeout: 15000,
+            maxBuffer: 1024 * 1024,
+        });
+        if (res.status !== 0) {
+            return { attempted: true, ok: false, query: q, summary: (res.stderr || res.stdout || `exit ${res.status}`).trim().slice(0, 240) };
+        }
+        const lines = (res.stdout || "").split("\n").map((x) => x.trim()).filter(Boolean).slice(0, limit);
+        const hits = lines.map((line) => {
+            const match = line.match(/^\[[^\]]+\]\s+([^\s]+)\s+--\s+(.*)$/);
+            return {
+                slug: match?.[1] || line.slice(0, 80),
+                preview: clampText(match?.[2] || line, 160),
+            };
+        });
+        return { attempted: true, ok: true, query: q, hits, summary: hits.length ? `Found ${hits.length} doc hits.` : "No doc hits." };
+    }
+    catch (err) {
+        return { attempted: true, ok: false, query: q, summary: err instanceof Error ? err.message.slice(0, 240) : String(err).slice(0, 240) };
+    }
+}
 function extractMessages(rawMessages) {
     const result = [];
     for (const msg of rawMessages.slice(-10)) {
@@ -1126,6 +1308,9 @@ function extractMessages(rawMessages) {
         // Skip user messages matching trivial/continuation patterns
         if (role === "user" && TRIVIAL_CAPTURE_PATTERNS.some((p) => p.test(text)))
             continue;
+        // Skip synthetic control/system wrapper turns even when they entered as user text
+        if (isSyntheticPromptText(text))
+            continue;
         result.push({ role, content: text });
     }
     return result;
@@ -1148,6 +1333,15 @@ const cortexPlugin = {
                 autoRecall: { type: "boolean" },
                 autoCapture: { type: "boolean" },
                 shadowMode: { type: "boolean", description: "Shadow mode — capture runs extraction but skips storage (dry-run)" },
+                gbrainShadowEnabled: { type: "boolean", description: "Enable GBrain shadow observe-only scaffolding (default: false)" },
+                gbrainShadowCapture: { type: "boolean", description: "Run observe-only GBrain shadow logging on capture path (default: true)" },
+                gbrainShadowRecall: { type: "boolean", description: "Run observe-only GBrain shadow logging on recall path (default: true)" },
+                gbrainShadowLogEnabled: { type: "boolean", description: "Persist timestamped GBrain shadow contribution logs (default: true)" },
+                gbrainShadowMaxPromptChars: { type: "number", description: "Max chars to keep in GBrain shadow previews (default: 2000)" },
+                gbrainShadowLogMaxEntries: { type: "number", description: "Max shadow log entries to retain per owner (default: 200)" },
+                gbrainShadowProviderBaseUrl: { type: "string", description: "Observe-only GBrain shadow provider base URL metadata or optional live shadow endpoint (default: https://api.minimax.io/anthropic)" },
+                gbrainShadowModel: { type: "string", description: "Observe-only GBrain shadow model metadata or optional live shadow model (default: MiniMax-M2.7-HighSpeed)" },
+                gbrainShadowApiKey: { type: "string", description: "Reserved for future real GBrain shadow execution; unused in the current scaffold" },
                 retrievalBudget: { type: "number" },
                 maxInjectionChars: { type: "number" },
                 maxInjectedMemories: { type: "number", description: "Max memories to inject per turn (default: 8)" },
@@ -1197,7 +1391,7 @@ const cortexPlugin = {
         if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
             api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
         }
-        api.logger.info(`cortex: registered (cortex=${cfg.cortexUrl}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode})`);
+        api.logger.info(`cortex: registered (cortex=${cfg.cortexUrl}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode}, gbrainShadow=${cfg.gbrainShadowEnabled ? "on" : "off"}, gbrainModel=${cfg.gbrainShadowModel})`);
         // -------------------------------------------------------------------------
         // Tools
         // -------------------------------------------------------------------------
@@ -1560,14 +1754,21 @@ const cortexPlugin = {
         api.on("before_agent_start", async (event, ctx) => {
             const startMs = Date.now();
             const blocks = [];
-            const laneDecision = shouldSkipMemoryInjection(event.prompt, ctx);
+            const laneDecision = shouldSkipMemoryInjection(event.prompt, event.messages, {
+                ...ctx,
+                trigger: ctx.trigger,
+            });
             if (laneDecision.skip) {
                 api.logger.info(`cortex: skipping recall injection for lane=${laneDecision.lane}`);
                 return;
             }
             // --- Fetch contextual memories (+ optional cornerstones) ---
             if (cfg.autoRecall) {
-                const doRetrieve = event.prompt && isMemoryRelevant(event.prompt);
+                const turnDecision = classifyTurnForMemory(event.prompt, event.messages, {
+                    ...ctx,
+                    trigger: ctx.trigger,
+                });
+                const doRetrieve = turnDecision.allow && event.prompt && isMemoryRelevant(event.prompt);
                 const doCornerstones = cfg.injectCornerstones; // default false — cornerstones in SOUL.md
                 // --- Memory retrieval (server-first, local fallback) ---
                 let memoryItems = [];
@@ -1644,6 +1845,22 @@ const cortexPlugin = {
                     const screened = cfg.enableInjectionScreening
                         ? screenInjectionCandidates(filtered, event.prompt ?? "", cfg, (msg) => api.logger.info(msg))
                         : filtered;
+                    if (cfg.gbrainShadowEnabled && cfg.gbrainShadowRecall) {
+                        const gbrainRetrieval = runGBrainShadowSearch(event.prompt ?? "", 3);
+                        maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
+                            phase: "recall",
+                            sessionId: ctx.sessionKey,
+                            turnId: ctx.sessionKey,
+                            providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
+                            model: cfg.gbrainShadowModel,
+                            prompt: event.prompt,
+                            maxPromptChars: cfg.gbrainShadowMaxPromptChars,
+                            status: "simulated",
+                            note: "Observe-only recall seam. Logged real GBrain docs retrieval without affecting authoritative injection.",
+                            divergenceFromAuthoritative: "GBrain shadow search runs for comparison only. Cortex remains the authoritative injected path.",
+                            gbrainRetrieval,
+                        }));
+                    }
                     const context = formatMemoryContext(screened, cfg.maxInjectionChars, filtered.length, cfg.maxInjectedMemories, cfg.minRelevanceScore, {
                         injectionFormat: cfg.injectionFormat,
                         showConflicts: cfg.showConflicts,
@@ -1662,6 +1879,23 @@ const cortexPlugin = {
                         }
                     }
                 }
+                else if (cfg.gbrainShadowEnabled && cfg.gbrainShadowRecall && event.prompt) {
+                    const gbrainRetrieval = runGBrainShadowSearch(event.prompt ?? "", 3);
+                    maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
+                        phase: "recall",
+                        sessionId: ctx.sessionKey,
+                        turnId: ctx.sessionKey,
+                        providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
+                        model: cfg.gbrainShadowModel,
+                        prompt: event.prompt,
+                        maxPromptChars: cfg.gbrainShadowMaxPromptChars,
+                        status: "skipped",
+                        reason: "no-memory-items",
+                        note: "Observe-only recall seam ran, but authoritative recall returned no items.",
+                        divergenceFromAuthoritative: "GBrain shadow search still ran for comparison, but nothing was injected because Cortex had no items.",
+                        gbrainRetrieval,
+                    }));
+                }
             }
             if (blocks.length) {
                 return { prependContext: blocks.join("\n\n") };
@@ -1677,8 +1911,12 @@ const cortexPlugin = {
                 const key = ctx.sessionKey ?? "";
                 if (key.includes(":subagent:") || key.includes(":cron:") || key.includes(":isolated:"))
                     return;
-                const hookCtx = ctx;
-                if (hookCtx.isHeartbeat)
+                const hookCtx = {
+                    ...ctx,
+                    trigger: ctx.trigger,
+                };
+                const turnDecision = classifyTurnForMemory(undefined, event.messages, hookCtx);
+                if (!turnDecision.allow)
                     return;
                 const messages = extractMessages(event.messages);
                 // Require at least 2 real messages — single-message captures are noise
@@ -1690,6 +1928,22 @@ const cortexPlugin = {
                 // Skip system events (sub-agent completions, exec notifications) — not worth extracting
                 if (SYSTEM_EVENT_PATTERNS.test(joined))
                     return;
+                if (cfg.gbrainShadowEnabled && cfg.gbrainShadowCapture) {
+                    const gbrainRetrieval = runGBrainShadowSearch(messages.map((m) => m.content).join(" "), 3);
+                    maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
+                        phase: "capture",
+                        sessionId: ctx.sessionKey,
+                        turnId: ctx.sessionKey,
+                        providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
+                        model: cfg.gbrainShadowModel,
+                        conversation: messages,
+                        maxPromptChars: cfg.gbrainShadowMaxPromptChars,
+                        status: "simulated",
+                        note: "Observe-only capture seam. Logged real GBrain docs retrieval metadata without affecting authoritative storage.",
+                        divergenceFromAuthoritative: "GBrain shadow search runs for comparison only. Cortex remains the authoritative storage path.",
+                        gbrainRetrieval,
+                    }));
+                }
                 // Fire and forget — no await, no blocking
                 const capturePromise = client.remember(messages, ctx.sessionKey, cfg.shadowMode);
                 if (capturePromise && typeof capturePromise.catch === "function") {
