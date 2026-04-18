@@ -37,7 +37,6 @@ exports.extractMessages = extractMessages;
 const typebox_1 = require("@sinclair/typebox");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
-const node_child_process_1 = require("node:child_process");
 // Dynamic require for node:sqlite (available in Node 22+, avoids TS import issues)
 let NodeDatabaseSync;
 try {
@@ -1220,14 +1219,12 @@ function createGBrainShadowEvent(params) {
         ts: new Date().toISOString(),
         phase: params.phase,
         sessionId: params.sessionId,
-        turnId: params.turnId,
         mode: "observe",
         provider: {
             baseUrl: params.providerBaseUrl,
             model: params.model,
             liveCall: false,
         },
-        gbrainRetrieval: params.gbrainRetrieval,
         promptPreview: params.prompt ? clampText(params.prompt, params.maxPromptChars) : undefined,
         conversationPreview: params.conversation?.map((msg) => ({
             role: msg.role,
@@ -1244,34 +1241,6 @@ function maybeLogGBrainShadowEvent(cfg, event) {
     if (!cfg.gbrainShadowEnabled || !cfg.gbrainShadowLogEnabled)
         return;
     appendGBrainShadowLog(cfg.ownerId, cfg.gbrainShadowLogMaxEntries, event);
-}
-function runGBrainShadowSearch(query, limit = 3) {
-    const q = clampText(query.trim(), 240);
-    if (!q)
-        return { attempted: false, ok: false, summary: "Empty query." };
-    try {
-        const res = (0, node_child_process_1.spawnSync)("bun", ["run", "src/cli.ts", "search", q, "--limit", String(limit)], {
-            cwd: "/Users/lume/gbrain",
-            encoding: "utf8",
-            timeout: 15000,
-            maxBuffer: 1024 * 1024,
-        });
-        if (res.status !== 0) {
-            return { attempted: true, ok: false, query: q, summary: (res.stderr || res.stdout || `exit ${res.status}`).trim().slice(0, 240) };
-        }
-        const lines = (res.stdout || "").split("\n").map((x) => x.trim()).filter(Boolean).slice(0, limit);
-        const hits = lines.map((line) => {
-            const match = line.match(/^\[[^\]]+\]\s+([^\s]+)\s+--\s+(.*)$/);
-            return {
-                slug: match?.[1] || line.slice(0, 80),
-                preview: clampText(match?.[2] || line, 160),
-            };
-        });
-        return { attempted: true, ok: true, query: q, hits, summary: hits.length ? `Found ${hits.length} doc hits.` : "No doc hits." };
-    }
-    catch (err) {
-        return { attempted: true, ok: false, query: q, summary: err instanceof Error ? err.message.slice(0, 240) : String(err).slice(0, 240) };
-    }
 }
 function extractMessages(rawMessages) {
     const result = [];
@@ -1846,19 +1815,16 @@ const cortexPlugin = {
                         ? screenInjectionCandidates(filtered, event.prompt ?? "", cfg, (msg) => api.logger.info(msg))
                         : filtered;
                     if (cfg.gbrainShadowEnabled && cfg.gbrainShadowRecall) {
-                        const gbrainRetrieval = runGBrainShadowSearch(event.prompt ?? "", 3);
                         maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
                             phase: "recall",
                             sessionId: ctx.sessionKey,
-                            turnId: ctx.sessionKey,
                             providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
                             model: cfg.gbrainShadowModel,
                             prompt: event.prompt,
                             maxPromptChars: cfg.gbrainShadowMaxPromptChars,
                             status: "simulated",
-                            note: "Observe-only recall seam. Logged real GBrain docs retrieval without affecting authoritative injection.",
-                            divergenceFromAuthoritative: "GBrain shadow search runs for comparison only. Cortex remains the authoritative injected path.",
-                            gbrainRetrieval,
+                            note: "Observe-only recall seam. Shadow metadata recorded without affecting authoritative injection.",
+                            divergenceFromAuthoritative: "GBrain remains non-authoritative here. This branch only records shadow metadata, not live retrieval results.",
                         }));
                     }
                     const context = formatMemoryContext(screened, cfg.maxInjectionChars, filtered.length, cfg.maxInjectedMemories, cfg.minRelevanceScore, {
@@ -1878,23 +1844,6 @@ const cortexPlugin = {
                             api.logger.warn(`cortex: retrieval took ${elapsed}ms, skipping memory injection (cornerstones still injected)`);
                         }
                     }
-                }
-                else if (cfg.gbrainShadowEnabled && cfg.gbrainShadowRecall && event.prompt) {
-                    const gbrainRetrieval = runGBrainShadowSearch(event.prompt ?? "", 3);
-                    maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
-                        phase: "recall",
-                        sessionId: ctx.sessionKey,
-                        turnId: ctx.sessionKey,
-                        providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
-                        model: cfg.gbrainShadowModel,
-                        prompt: event.prompt,
-                        maxPromptChars: cfg.gbrainShadowMaxPromptChars,
-                        status: "skipped",
-                        reason: "no-memory-items",
-                        note: "Observe-only recall seam ran, but authoritative recall returned no items.",
-                        divergenceFromAuthoritative: "GBrain shadow search still ran for comparison, but nothing was injected because Cortex had no items.",
-                        gbrainRetrieval,
-                    }));
                 }
             }
             if (blocks.length) {
@@ -1929,19 +1878,16 @@ const cortexPlugin = {
                 if (SYSTEM_EVENT_PATTERNS.test(joined))
                     return;
                 if (cfg.gbrainShadowEnabled && cfg.gbrainShadowCapture) {
-                    const gbrainRetrieval = runGBrainShadowSearch(messages.map((m) => m.content).join(" "), 3);
                     maybeLogGBrainShadowEvent(cfg, createGBrainShadowEvent({
                         phase: "capture",
                         sessionId: ctx.sessionKey,
-                        turnId: ctx.sessionKey,
                         providerBaseUrl: cfg.gbrainShadowProviderBaseUrl,
                         model: cfg.gbrainShadowModel,
                         conversation: messages,
                         maxPromptChars: cfg.gbrainShadowMaxPromptChars,
                         status: "simulated",
-                        note: "Observe-only capture seam. Logged real GBrain docs retrieval metadata without affecting authoritative storage.",
-                        divergenceFromAuthoritative: "GBrain shadow search runs for comparison only. Cortex remains the authoritative storage path.",
-                        gbrainRetrieval,
+                        note: "Observe-only capture seam. Shadow metadata recorded without affecting authoritative storage.",
+                        divergenceFromAuthoritative: "GBrain remains non-authoritative here. This branch only records shadow metadata, not live retrieval results.",
                     }));
                 }
                 // Fire and forget — no await, no blocking

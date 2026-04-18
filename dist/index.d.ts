@@ -86,22 +86,11 @@ interface GBrainShadowEvent {
     ts: string;
     phase: "recall" | "capture";
     sessionId?: string;
-    turnId?: string;
     mode: "observe";
     provider: {
         baseUrl: string;
         model: string;
         liveCall: boolean;
-    };
-    gbrainRetrieval?: {
-        attempted: boolean;
-        ok: boolean;
-        query?: string;
-        hits?: Array<{
-            slug: string;
-            preview: string;
-        }>;
-        summary?: string;
     };
     promptPreview?: string;
     conversationPreview?: Array<{
@@ -156,7 +145,6 @@ export declare function getGBrainShadowLogPath(ownerId: string): string;
 export declare function createGBrainShadowEvent(params: {
     phase: "recall" | "capture";
     sessionId?: string;
-    turnId?: string;
     providerBaseUrl: string;
     model: string;
     prompt?: string;
@@ -169,16 +157,6 @@ export declare function createGBrainShadowEvent(params: {
     reason?: string;
     note: string;
     divergenceFromAuthoritative?: string;
-    gbrainRetrieval?: {
-        attempted: boolean;
-        ok: boolean;
-        query?: string;
-        hits?: Array<{
-            slug: string;
-            preview: string;
-        }>;
-        summary?: string;
-    };
 }): GBrainShadowEvent;
 export declare function extractMessages(rawMessages: unknown[]): Array<{
     role: string;
