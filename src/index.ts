@@ -949,13 +949,15 @@ function isSyntheticPromptText(prompt: string | undefined): boolean {
 
 function hasSyntheticUserTurn(messages: unknown[] | undefined): boolean {
   if (!Array.isArray(messages) || messages.length === 0) return false;
+  let sawUser = false;
   for (let index = Math.max(0, messages.length - 10); index < messages.length; index += 1) {
     const message = messages[index];
     if (!message || typeof message !== "object") continue;
     const role = (message as Record<string, unknown>).role;
     if (role !== "user") continue;
+    sawUser = true;
     const text = extractMessageText(message);
-    return isSyntheticPromptText(text);
+    if (isSyntheticPromptText(text)) return true;
   }
   return false;
 }
@@ -2048,22 +2050,21 @@ const cortexPlugin = {
       const startMs = Date.now();
       const blocks: string[] = [];
 
-      const laneDecision = shouldSkipMemoryInjection(event.prompt, event.messages, {
-        ...(ctx as HookLaneContext),
+      const hookCtx: HookLaneContext = {
+        sessionKey: (ctx as HookLaneContext | undefined)?.sessionKey,
+        runKind: (ctx as HookLaneContext | undefined)?.runKind,
+        isHeartbeat: (ctx as HookLaneContext | undefined)?.isHeartbeat,
         trigger: (ctx as { trigger?: string }).trigger,
-      });
-      if (laneDecision.skip) {
-        api.logger.info(`cortex: skipping recall injection for lane=${laneDecision.lane}`);
+      };
+      const turnDecision = classifyTurnForMemory(event.prompt, event.messages, hookCtx);
+      if (!turnDecision.allow) {
+        api.logger.info(`cortex: skipping recall injection for lane=${turnDecision.reason}`);
         return;
       }
 
       // --- Fetch contextual memories (+ optional cornerstones) ---
       if (cfg.autoRecall) {
-        const turnDecision = classifyTurnForMemory(event.prompt, event.messages, {
-          ...(ctx as HookLaneContext),
-          trigger: (ctx as { trigger?: string }).trigger,
-        });
-        const doRetrieve = turnDecision.allow && event.prompt && isMemoryRelevant(event.prompt);
+        const doRetrieve = !!event.prompt && isMemoryRelevant(event.prompt);
         const doCornerstones = cfg.injectCornerstones; // default false — cornerstones in SOUL.md
 
         // --- Memory retrieval (server-first, local fallback) ---
