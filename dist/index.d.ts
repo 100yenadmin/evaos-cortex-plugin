@@ -82,13 +82,26 @@ interface ProcessedItem {
     relationHint?: string;
 }
 interface GBrainShadowEvent {
+    schemaVersion: "gbrain-shadow-v1";
     ts: string;
     phase: "recall" | "capture";
     sessionId?: string;
+    turnId?: string;
     mode: "observe";
     provider: {
         baseUrl: string;
         model: string;
+        liveCall: boolean;
+    };
+    gbrainRetrieval?: {
+        attempted: boolean;
+        ok: boolean;
+        query?: string;
+        hits?: Array<{
+            slug: string;
+            preview: string;
+        }>;
+        summary?: string;
     };
     promptPreview?: string;
     conversationPreview?: Array<{
@@ -98,9 +111,22 @@ interface GBrainShadowEvent {
     status: "skipped" | "simulated" | "disabled";
     reason?: string;
     note: string;
-    wouldInjectCount?: number;
+    source: "gbrain-shadow-scaffold";
+    divergenceFromAuthoritative?: string;
 }
 declare function parseConfig(raw: unknown): EvaMemoryConfig;
+export declare function isMemoryRelevant(prompt: string): boolean;
+type HookRunKind = "main" | "subagent" | "cron" | "isolated" | "hook" | "unknown";
+type HookLaneContext = {
+    runKind?: HookRunKind;
+    isHeartbeat?: boolean;
+    sessionKey?: string;
+    trigger?: string;
+};
+export declare function classifyTurnForMemory(prompt: string | undefined, messages: unknown[] | undefined, ctx?: HookLaneContext): {
+    allow: boolean;
+    reason: string;
+};
 /** Session risk mode for dynamic threshold selection. */
 type InjectionMode = "critical" | "technical" | "personal";
 /** Parse raw plugin config into a validated EvaMemoryConfig object. */
@@ -130,6 +156,7 @@ export declare function getGBrainShadowLogPath(ownerId: string): string;
 export declare function createGBrainShadowEvent(params: {
     phase: "recall" | "capture";
     sessionId?: string;
+    turnId?: string;
     providerBaseUrl: string;
     model: string;
     prompt?: string;
@@ -141,8 +168,22 @@ export declare function createGBrainShadowEvent(params: {
     status: "skipped" | "simulated" | "disabled";
     reason?: string;
     note: string;
-    wouldInjectCount?: number;
+    divergenceFromAuthoritative?: string;
+    gbrainRetrieval?: {
+        attempted: boolean;
+        ok: boolean;
+        query?: string;
+        hits?: Array<{
+            slug: string;
+            preview: string;
+        }>;
+        summary?: string;
+    };
 }): GBrainShadowEvent;
+export declare function extractMessages(rawMessages: unknown[]): Array<{
+    role: string;
+    content: string;
+}>;
 declare const cortexPlugin: {
     id: string;
     name: string;
