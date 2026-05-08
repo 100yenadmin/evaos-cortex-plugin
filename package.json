@@ -5,8 +5,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc",
-    "test": "npm run build && node dist/__tests__/memory-context-format.test.js && node dist/__tests__/company-brain-tools.test.js && node dist/__tests__/company-brain-context-format.test.js",
+    "build": "tsc && node scripts/sync-dist-manifest.mjs",
+    "test": "npm run build && node dist/__tests__/memory-context-format.test.js && node dist/__tests__/company-brain-tools.test.js && node dist/__tests__/company-brain-context-format.test.js && node dist/__tests__/plugin-manifest-parity.test.js",
     "company-brain:canary": "node scripts/company-brain-canary.mjs",
     "prepublishOnly": "npm run build"
   },

@@ -1,7 +1,7 @@
 {
   "id": "cortex",
   "name": "Memory (Cortex)",
-  "description": "Cortex memory engine \u2014 retrieval, storage, and lifecycle management for evaOS",
+  "description": "Cortex memory engine — retrieval, storage, and lifecycle management for evaOS",
   "version": "1.0.0",
   "kind": "memory",
   "main": "index.js",
@@ -15,6 +15,7 @@
     "cortex_add_commitment",
     "cortex_update_commitment",
     "cortex_list_commitments",
+    "cortex_insights",
     "company_brain_accounts_list",
     "company_brain_account_brief",
     "company_brain_account_timeline",
@@ -49,7 +50,7 @@
       },
       "shadowMode": {
         "type": "boolean",
-        "description": "Shadow mode \u2014 capture runs extraction but skips storage (dry-run, default: false)"
+        "description": "Shadow mode — capture runs extraction but skips storage (dry-run, default: false)"
       },
       "retrievalBudget": {
         "type": "number",
@@ -67,6 +68,62 @@
           "thorough"
         ],
         "description": "Retrieval mode for memory search (default: fast)"
+      },
+      "injectionFormat": {
+        "type": "string",
+        "enum": [
+          "v1",
+          "v2"
+        ],
+        "default": "v1",
+        "description": "Memory injection format version"
+      },
+      "showConflicts": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show conflict markers in v2 format"
+      },
+      "showRelations": {
+        "type": "boolean",
+        "default": true,
+        "description": "Show relation hints in v2 format"
+      },
+      "dedup": {
+        "type": "boolean",
+        "default": true,
+        "description": "Deduplicate similar memories in v2 format"
+      },
+      "companyBrainContextMode": {
+        "type": "string",
+        "enum": [
+          "off",
+          "auto"
+        ],
+        "default": "off",
+        "description": "Opt-in account-scoped Company Brain context injection mode"
+      },
+      "companyBrainContextAccountId": {
+        "type": "string",
+        "description": "Stable Company Brain account ID to inject when companyBrainContextMode is auto"
+      },
+      "companyBrainContextSearch": {
+        "type": "string",
+        "description": "Account search text used with company_brain_accounts_list when no account ID is configured"
+      },
+      "companyBrainContextFactsLimit": {
+        "type": "number",
+        "default": 25,
+        "description": "Max account facts to request for Company Brain context"
+      },
+      "companyBrainContextEventsLimit": {
+        "type": "number",
+        "default": 10,
+        "description": "Max action-readiness events to request for Company Brain context"
+      },
+      "companyBrainContextMaxChars": {
+        "type": "number",
+        "default": 6000,
+        "description": "Max characters for the Company Brain context block"
       }
     },
     "required": []
