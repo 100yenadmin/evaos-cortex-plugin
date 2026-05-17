@@ -23,10 +23,12 @@
  *        cortex_add_open_loop, cortex_resolve_open_loop, cortex_list_open_loops
  */
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+export type OwnerContextMode = "server_resolved" | "configured";
 interface EvaMemoryConfig {
     cortexUrl: string;
     apiKey: string;
     ownerId: string;
+    ownerIdMode: OwnerContextMode;
     autoRecall: boolean;
     autoCapture: boolean;
     shadowMode: boolean;
@@ -90,6 +92,10 @@ interface ProcessedItem {
     conflictWithId?: string;
     relationHint?: string;
 }
+export declare function shouldSendConfiguredOwner(ownerId: string, ownerIdMode: OwnerContextMode): boolean;
+export declare function withConfiguredOwner<T extends Record<string, unknown>>(body: T, ownerId: string, ownerIdMode: OwnerContextMode): T & {
+    owner_id?: string;
+};
 export declare function formatCompanyBrainToolResult(label: string, result: CompanyBrainToolResult | null): string;
 export declare function formatCompanyBrainContext(payload: CompanyBrainContextPayload, options?: {
     maxChars?: number;
@@ -143,6 +149,13 @@ declare const cortexPlugin: {
                 };
                 ownerId: {
                     type: string;
+                    description: string;
+                };
+                ownerIdMode: {
+                    type: string;
+                    enum: string[];
+                    default: string;
+                    description: string;
                 };
                 autoRecall: {
                     type: string;

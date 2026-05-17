@@ -38,7 +38,16 @@
       },
       "ownerId": {
         "type": "string",
-        "description": "Memory owner namespace (e.g. 'eva', 'andrew-main')"
+        "description": "Memory owner namespace used only when ownerIdMode is configured."
+      },
+      "ownerIdMode": {
+        "type": "string",
+        "enum": [
+          "server_resolved",
+          "configured"
+        ],
+        "default": "server_resolved",
+        "description": "Owner forwarding mode. server_resolved lets Cortex/proxy resolve ownership from auth; configured forwards ownerId for self-host installs."
       },
       "autoRecall": {
         "type": "boolean",

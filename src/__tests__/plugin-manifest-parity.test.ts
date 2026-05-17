@@ -9,6 +9,7 @@ assert.deepEqual(distManifest.configSchema, rootManifest.configSchema);
 assert.equal(distManifest.main, "index.js");
 
 for (const property of [
+  "ownerIdMode",
   "companyBrainContextMode",
   "companyBrainContextAccountId",
   "companyBrainContextSearch",
