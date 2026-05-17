@@ -50,7 +50,7 @@ cd cortex && npm install --omit=dev
         "config": {
           "cortexUrl": "https://your-cortex-server.example.com",
           "apiKey": "your-api-key",
-          "ownerId": "my-agent"
+          "ownerIdMode": "server_resolved"
         }
       }
     }
@@ -66,7 +66,8 @@ cd cortex && npm install --omit=dev
 |--------|------|---------|-------------|
 | `cortexUrl` | `string` | `http://localhost:8000` | Cortex API base URL |
 | `apiKey` | `string` | — | API key (optional for local, required for production) |
-| `ownerId` | `string` | `default` | Memory namespace — isolates memories per user/agent |
+| `ownerId` | `string` | `default` | Memory namespace used only when `ownerIdMode` is `configured` |
+| `ownerIdMode` | `string` | `server_resolved` | Owner forwarding mode. Keep `server_resolved` for hosted/proxy installs so Cortex resolves ownership from auth; use `configured` only for self-host installs that intentionally forward `ownerId`. |
 | `autoRecall` | `boolean` | `true` | Retrieve relevant memories before each agent turn |
 | `autoCapture` | `boolean` | `true` | Extract and store memories after each agent turn |
 | `shadowMode` | `boolean` | `false` | Dry-run mode — runs extraction but skips storage |
@@ -79,6 +80,16 @@ cd cortex && npm install --omit=dev
 | `companyBrainContextFactsLimit` | `number` | `25` | Max account facts requested for Company Brain context |
 | `companyBrainContextEventsLimit` | `number` | `10` | Max action-readiness events requested for Company Brain context |
 | `companyBrainContextMaxChars` | `number` | `6000` | Max characters in the Company Brain context block |
+
+For self-hosted Cortex installs that intentionally use a configured local
+namespace, set both fields explicitly:
+
+```jsonc
+{
+  "ownerId": "my-agent",
+  "ownerIdMode": "configured"
+}
+```
 
 ## Tools
 
@@ -96,6 +107,7 @@ directly:
 | `cortex_add_commitment` | Track a new commitment or promise |
 | `cortex_update_commitment` | Mark a commitment as completed or cancelled |
 | `cortex_list_commitments` | List active (or all) tracked commitments |
+| `cortex_insights` | List pending or accepted Cortex insights |
 | `cortex_add_open_loop` | Track an unresolved thread or topic |
 | `cortex_resolve_open_loop` | Mark an open loop as resolved |
 | `cortex_list_open_loops` | List unresolved threads |
@@ -109,6 +121,12 @@ Company Brain tools are explicit and account-scoped. They call Cortex
 `citations`, `verification_status`, `requires_approval`, `action_readiness`,
 pagination, and `insufficient_evidence`. They do not inject generic always-on
 Company Brain context and they do not write to shared plugin storage.
+
+Generic Cortex tools do not accept per-call `owner_id` overrides. In hosted or
+proxy deployments, leave `ownerIdMode` at `server_resolved` so Cortex derives
+the effective owner from the authenticated request. `ownerIdMode: "configured"`
+is retained for self-host installs that deliberately use the configured
+`ownerId` as their local namespace.
 
 For customer/account workspaces, `companyBrainContextMode: "auto"` enables a
 separate `<company-brain-context>` block. The block is distinct from

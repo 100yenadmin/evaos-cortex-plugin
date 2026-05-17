@@ -11,6 +11,7 @@ strict_1.default.deepEqual(distManifest.tools, rootManifest.tools);
 strict_1.default.deepEqual(distManifest.configSchema, rootManifest.configSchema);
 strict_1.default.equal(distManifest.main, "index.js");
 for (const property of [
+    "ownerIdMode",
     "companyBrainContextMode",
     "companyBrainContextAccountId",
     "companyBrainContextSearch",

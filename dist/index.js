@@ -24,6 +24,8 @@
  *        cortex_add_open_loop, cortex_resolve_open_loop, cortex_list_open_loops
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.shouldSendConfiguredOwner = shouldSendConfiguredOwner;
+exports.withConfiguredOwner = withConfiguredOwner;
 exports.formatCompanyBrainToolResult = formatCompanyBrainToolResult;
 exports.formatCompanyBrainContext = formatCompanyBrainContext;
 exports.resolveCompanyBrainAccountFromAccountsList = resolveCompanyBrainAccountFromAccountsList;
@@ -54,10 +56,18 @@ function addOptionalParam(params, key, value) {
     if (typeof value === "number" && Number.isFinite(value))
         params.set(key, String(Math.trunc(value)));
 }
-function addOwnerParam(params, ownerId) {
+function shouldSendConfiguredOwner(ownerId, ownerIdMode) {
+    return ownerIdMode === "configured" && Boolean(ownerId) && ownerId !== "default";
+}
+function withConfiguredOwner(body, ownerId, ownerIdMode) {
+    if (!shouldSendConfiguredOwner(ownerId, ownerIdMode))
+        return body;
+    return { ...body, owner_id: ownerId };
+}
+function addOwnerParam(params, ownerId, ownerIdMode) {
     // The Cortex API remains authoritative for ownership. Tenant/JWT callers cannot
-    // override auth owner; this explicit owner is for self-host and owner-bound API keys.
-    if (ownerId && ownerId !== "default")
+    // override auth owner; explicit owner forwarding is opt-in for self-host installs.
+    if (shouldSendConfiguredOwner(ownerId, ownerIdMode))
         params.set("owner_id", ownerId);
 }
 function formatCompanyBrainToolResult(label, result) {
@@ -207,6 +217,7 @@ function parseConfig(raw) {
         cortexUrl: "http://localhost:8000",
         apiKey: "",
         ownerId: "default",
+        ownerIdMode: "server_resolved",
         autoRecall: true,
         autoCapture: true,
         shadowMode: false,
@@ -242,10 +253,12 @@ function parseConfig(raw) {
         : defaults.retrievalMode;
     const parsedInjectionFormat = c.injectionFormat === "v2" ? "v2" : defaults.injectionFormat;
     const parsedCompanyBrainContextMode = c.companyBrainContextMode === "auto" ? "auto" : defaults.companyBrainContextMode;
+    const parsedOwnerIdMode = c.ownerIdMode === "configured" ? "configured" : defaults.ownerIdMode;
     return {
         cortexUrl: typeof c.cortexUrl === "string" ? resolveEnv(c.cortexUrl) : defaults.cortexUrl,
         apiKey: typeof c.apiKey === "string" ? resolveEnv(c.apiKey) : defaults.apiKey,
         ownerId: typeof c.ownerId === "string" && c.ownerId ? c.ownerId : defaults.ownerId,
+        ownerIdMode: parsedOwnerIdMode,
         autoRecall: c.autoRecall !== false,
         autoCapture: c.autoCapture !== false,
         shadowMode: c.shadowMode === true,
@@ -278,11 +291,13 @@ class CortexClient {
     baseUrl;
     apiKey;
     ownerId;
+    ownerIdMode;
     warn;
-    constructor(baseUrl, apiKey, ownerId, warnFn) {
+    constructor(baseUrl, apiKey, ownerId, ownerIdMode, warnFn) {
         this.baseUrl = baseUrl;
         this.apiKey = apiKey;
         this.ownerId = ownerId;
+        this.ownerIdMode = ownerIdMode;
         this.baseUrl = baseUrl.replace(/\/+$/, "");
         this.warn = warnFn ?? console.warn;
     }
@@ -294,6 +309,18 @@ class CortexClient {
         // from the API key via flyio-sync. Sending owner_id in headers would
         // allow identity spoofing in legacy auth mode.
         return h;
+    }
+    ownerBody(body) {
+        return withConfiguredOwner(body, this.ownerId, this.ownerIdMode);
+    }
+    ownerParams(initial = {}) {
+        const params = new URLSearchParams(initial);
+        addOwnerParam(params, this.ownerId, this.ownerIdMode);
+        return params;
+    }
+    withQuery(path, params) {
+        const query = params.toString();
+        return query ? `${path}?${query}` : path;
     }
     async post(path, body, timeoutMs = 5000) {
         const controller = new AbortController();
@@ -382,23 +409,24 @@ class CortexClient {
     async retrieve(query, tokenBudget, mode = "auto") {
         // 2000ms timeout: allows for cold-start and first-embed latency.
         // For self-hosted Cortex (localhost or LAN) 200-800ms is typical.
-        return this.post("/api/v1/memories/retrieve", {
+        return this.post("/api/v1/memories/retrieve", this.ownerBody({
             query,
             token_budget: tokenBudget,
             mode,
-            owner_id: this.ownerId,
-        }, 2000);
+        }), 2000);
     }
     remember(conversation, sessionId, shadow = false) {
         const path = shadow ? "/api/v1/memories/remember?shadow=true" : "/api/v1/memories/remember";
-        return this.post(path, { conversation, session_id: sessionId, source_session_id: sessionId, owner_id: this.ownerId }, 30000);
+        return this.post(path, this.ownerBody({ conversation, session_id: sessionId, source_session_id: sessionId }), 30000);
     }
     async search(query, limit = 10) {
         // API v1.2.0: field is "top_k" not "limit" (http-complete.md §POST /api/v1/memories/search)
-        return this.post("/api/v1/memories/search", { query, owner_id: this.ownerId, top_k: limit });
+        return this.post("/api/v1/memories/search", this.ownerBody({ query, top_k: limit }));
     }
     async forget(memoryId) {
-        return this.del(`/api/v1/memories/${encodeURIComponent(memoryId)}?owner_id=${encodeURIComponent(this.ownerId)}`);
+        const params = this.ownerParams();
+        const query = params.toString();
+        return this.del(`/api/v1/memories/${encodeURIComponent(memoryId)}${query ? `?${query}` : ""}`);
     }
     // --- Sessions ---
     wake(sessionId) {
@@ -410,51 +438,55 @@ class CortexClient {
         this.post("/api/v1/sessions/sleep", { session_id: sessionId }).catch(() => { });
     }
     // --- Dialectic ---
-    async ask(question, ownerId, limit = 5) {
-        return this.post("/api/v1/ask", { query: question, owner_id: ownerId ?? this.ownerId, max_steps: limit });
+    async ask(question, limit = 5) {
+        return this.post("/api/v1/ask", this.ownerBody({ query: question, max_steps: limit }));
     }
     // --- Contradictions ---
-    async listContradictions(ownerId) {
-        const params = new URLSearchParams({ owner_id: ownerId ?? this.ownerId });
-        return this.get(`/api/v1/contradictions?${params}`);
+    async listContradictions() {
+        const params = this.ownerParams();
+        return this.get(this.withQuery("/api/v1/contradictions", params));
     }
-    async resolveContradiction(id, resolution, ownerId) {
-        return this.patch(`/api/v1/contradictions/${encodeURIComponent(id)}`, { resolution, owner_id: ownerId ?? this.ownerId });
+    async resolveContradiction(id, resolution) {
+        return this.patch(`/api/v1/contradictions/${encodeURIComponent(id)}`, this.ownerBody({ resolution }));
     }
     // --- Commitments ---
-    async addCommitment(description, dueAt, ownerId) {
-        return this.post("/api/v1/commitments", { content: description, due_at: dueAt, owner_id: ownerId ?? this.ownerId });
+    async addCommitment(description, dueAt) {
+        return this.post("/api/v1/commitments", this.ownerBody({ content: description, due_at: dueAt }));
     }
-    async updateCommitment(commitmentId, commitmentStatus, ownerId) {
-        return this.patch(`/api/v1/commitments/${encodeURIComponent(commitmentId)}`, { status: commitmentStatus, owner_id: ownerId ?? this.ownerId });
+    async updateCommitment(commitmentId, commitmentStatus) {
+        return this.patch(`/api/v1/commitments/${encodeURIComponent(commitmentId)}`, this.ownerBody({ status: commitmentStatus }));
     }
-    async listCommitments(ownerId, status) {
-        const params = new URLSearchParams({ owner_id: ownerId ?? this.ownerId });
+    async listCommitments(status) {
+        const params = this.ownerParams();
         if (status)
             params.set("status", status);
-        return this.get(`/api/v1/commitments?${params}`);
+        return this.get(this.withQuery("/api/v1/commitments", params));
     }
     // --- Insights ---
     async listInsights(status = "pending", limit = 5) {
-        return this.get(`/api/v1/insights?owner_id=${encodeURIComponent(this.ownerId)}&status=${encodeURIComponent(status)}&limit=${encodeURIComponent(String(limit))}`);
+        const params = this.ownerParams({
+            status,
+            limit: String(limit),
+        });
+        return this.get(this.withQuery("/api/v1/insights", params));
     }
     // --- Open Loops ---
-    async addOpenLoop(description, ownerId) {
-        return this.post("/api/v1/open-loops", { content: description, owner_id: ownerId ?? this.ownerId });
+    async addOpenLoop(description) {
+        return this.post("/api/v1/open-loops", this.ownerBody({ content: description }));
     }
-    async resolveOpenLoop(loopId, ownerId) {
-        return this.patch(`/api/v1/open-loops/${encodeURIComponent(loopId)}`, { owner_id: ownerId ?? this.ownerId });
+    async resolveOpenLoop(loopId) {
+        return this.patch(`/api/v1/open-loops/${encodeURIComponent(loopId)}`, this.ownerBody({}));
     }
-    async listOpenLoops(ownerId, status) {
-        const params = new URLSearchParams({ owner_id: ownerId ?? this.ownerId });
+    async listOpenLoops(status) {
+        const params = this.ownerParams();
         if (status)
             params.set("status", status);
-        return this.get(`/api/v1/open-loops?${params}`);
+        return this.get(this.withQuery("/api/v1/open-loops", params));
     }
     // --- Company Brain ---
     async listCompanyBrainAccounts(options = {}) {
         const params = new URLSearchParams();
-        addOwnerParam(params, this.ownerId);
+        addOwnerParam(params, this.ownerId, this.ownerIdMode);
         addOptionalParam(params, "search", options.search);
         addOptionalParam(params, "workspace_id", options.workspaceId);
         params.set("limit", String(clampNumber(options.limit, 50, 1, 200)));
@@ -464,31 +496,30 @@ class CortexClient {
     }
     async getCompanyBrainAccountBrief(accountId, options = {}) {
         const params = new URLSearchParams();
-        addOwnerParam(params, this.ownerId);
+        addOwnerParam(params, this.ownerId, this.ownerIdMode);
         params.set("facts_limit", String(clampNumber(options.factsLimit, 50, 1, 200)));
         params.set("facts_offset", String(clampNumber(options.factsOffset, 0, 0, 1000000)));
         return this.get(`/api/v1/company-brain/accounts/${encodeURIComponent(accountId)}/brief?${params}`);
     }
     async getCompanyBrainAccountTimeline(accountId, options = {}) {
         const params = new URLSearchParams();
-        addOwnerParam(params, this.ownerId);
+        addOwnerParam(params, this.ownerId, this.ownerIdMode);
         params.set("limit", String(clampNumber(options.limit, 50, 1, 200)));
         params.set("offset", String(clampNumber(options.offset, 0, 0, 1000000)));
         return this.get(`/api/v1/company-brain/accounts/${encodeURIComponent(accountId)}/timeline?${params}`);
     }
     async queryCompanyBrain(options) {
-        return this.post("/api/v1/company-brain/query", {
-            owner_id: this.ownerId && this.ownerId !== "default" ? this.ownerId : undefined,
+        return this.post("/api/v1/company-brain/query", this.ownerBody({
             account_id: options.accountId,
             intent: options.intent ?? "auto",
             question: options.question,
             limit: clampNumber(options.limit, 10, 1, 50),
-        });
+        }));
     }
     // --- Cornerstones ---
     async getCornerstones() {
-        const params = new URLSearchParams({ owner_id: this.ownerId });
-        return this.get(`/api/v1/cornerstones?${params}`, 3000);
+        const params = this.ownerParams();
+        return this.get(this.withQuery("/api/v1/cornerstones", params), 3000);
     }
     // --- Health ---
     async health() {
@@ -509,15 +540,14 @@ class CortexClient {
     }
     // --- Bulk list (for cache sync) ---
     async listMemories(perPage = 200, page = 1, includeEmbeddings = false) {
-        const params = new URLSearchParams({
-            owner_id: this.ownerId,
+        const params = this.ownerParams({
             per_page: String(perPage),
             page: String(page),
             status: "active",
         });
         if (includeEmbeddings)
             params.set("include_embeddings", "true");
-        return this.get(`/api/v1/memories?${params}`, 15000);
+        return this.get(this.withQuery("/api/v1/memories", params), 15000);
     }
 }
 const COMPANY_BRAIN_CONTEXT_KEYWORDS = /\b(company brain|customer|client|account|workspace|follow[- ]?up|blocked|blocker|crm|operator|approval|clinic|lead|deal)\b/i;
@@ -1407,7 +1437,13 @@ const cortexPlugin = {
             properties: {
                 cortexUrl: { type: "string" },
                 apiKey: { type: "string" },
-                ownerId: { type: "string" },
+                ownerId: { type: "string", description: "Memory owner namespace used only when ownerIdMode is configured." },
+                ownerIdMode: {
+                    type: "string",
+                    enum: ["server_resolved", "configured"],
+                    default: "server_resolved",
+                    description: "Owner forwarding mode. Default server_resolved lets Cortex/proxy resolve ownership from auth; configured forwards ownerId for self-host installs.",
+                },
                 autoRecall: { type: "boolean" },
                 autoCapture: { type: "boolean" },
                 shadowMode: { type: "boolean", description: "Shadow mode — capture runs extraction but skips storage (dry-run)" },
@@ -1441,12 +1477,13 @@ const cortexPlugin = {
         if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
             api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
         }
-        const client = new CortexClient(cfg.cortexUrl, cfg.apiKey, cfg.ownerId, (msg) => api.logger.warn(msg));
+        const client = new CortexClient(cfg.cortexUrl, cfg.apiKey, cfg.ownerId, cfg.ownerIdMode, (msg) => api.logger.warn(msg));
         // --- Local memory cache ---
         let memoryCache = null;
         let syncInterval = null;
         const CACHE_SYNC_INTERVAL_MS = 300000; // 5 minutes
-        if (NodeDatabaseSync) {
+        const localCacheOwnerEnabled = shouldSendConfiguredOwner(cfg.ownerId, cfg.ownerIdMode);
+        if (NodeDatabaseSync && localCacheOwnerEnabled) {
             try {
                 // Resolve cache path relative to this plugin file
                 const pluginDir = typeof __dirname === "string" ? __dirname : (0, node_path_1.dirname)(__filename);
@@ -1459,6 +1496,9 @@ const cortexPlugin = {
                 memoryCache = null;
             }
         }
+        else if (!localCacheOwnerEnabled) {
+            api.logger.info("cortex: local memory cache disabled without an explicit configured owner");
+        }
         else {
             api.logger.info("cortex: node:sqlite not available — local cache disabled");
         }
@@ -1466,7 +1506,7 @@ const cortexPlugin = {
         if (cfg.apiKey && !cfg.apiKey.startsWith("${")) {
             api.logger.warn("cortex: API key appears to be hardcoded in config. Consider using environment variable: apiKey: '${CORTEX_API_KEY}'");
         }
-        api.logger.info(`cortex: registered (cortex=${cfg.cortexUrl}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode})`);
+        api.logger.info(`cortex: registered (cortex=${cfg.cortexUrl}, ownerMode=${cfg.ownerIdMode}, owner=${cfg.ownerId}, recall=${cfg.autoRecall}, capture=${cfg.autoCapture}, shadow=${cfg.shadowMode})`);
         // -------------------------------------------------------------------------
         // Tools
         // -------------------------------------------------------------------------
@@ -1558,13 +1598,12 @@ const cortexPlugin = {
             description: "Ask a question answered using the user's stored memories. Returns an LLM-synthesized answer grounded in memory.",
             parameters: typebox_1.Type.Object({
                 question: typebox_1.Type.String({ description: "Natural-language question to answer from memory" }),
-                owner_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
                 limit: typebox_1.Type.Optional(typebox_1.Type.Number({ description: "Max retrieval steps (default: 5)" })),
             }),
             async execute(_toolCallId, params) {
-                const { question, owner_id, limit } = params;
+                const { question, limit } = params;
                 try {
-                    const result = await client.ask(question, owner_id, limit ?? 5);
+                    const result = await client.ask(question, limit ?? 5);
                     if (!result || !result.ok) {
                         return { content: [{ type: "text", text: "No answer found — Cortex returned no result." }] };
                     }
@@ -1586,13 +1625,10 @@ const cortexPlugin = {
             name: "cortex_list_contradictions",
             label: "Cortex List Contradictions",
             description: "List detected contradictions between stored memories. Use for memory hygiene audits.",
-            parameters: typebox_1.Type.Object({
-                owner_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
-            }),
-            async execute(_toolCallId, params) {
-                const { owner_id } = params;
+            parameters: typebox_1.Type.Object({}),
+            async execute(_toolCallId, _params) {
                 try {
-                    const result = await client.listContradictions(owner_id);
+                    const result = await client.listContradictions();
                     if (!result) {
                         return { content: [{ type: "text", text: "Failed to fetch contradictions." }] };
                     }
@@ -1617,12 +1653,11 @@ const cortexPlugin = {
             parameters: typebox_1.Type.Object({
                 id: typebox_1.Type.String({ description: "Contradiction ID to resolve" }),
                 resolution: typebox_1.Type.String({ description: "Resolution explanation (e.g. 'newer memory is correct')" }),
-                owner_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
             }),
             async execute(_toolCallId, params) {
-                const { id, resolution, owner_id } = params;
+                const { id, resolution } = params;
                 try {
-                    const result = await client.resolveContradiction(id, resolution, owner_id);
+                    const result = await client.resolveContradiction(id, resolution);
                     if (!result) {
                         return { content: [{ type: "text", text: `Failed to resolve contradiction ${id}.` }] };
                     }
@@ -1640,12 +1675,11 @@ const cortexPlugin = {
             parameters: typebox_1.Type.Object({
                 description: typebox_1.Type.String({ description: "What was committed to" }),
                 due_at: typebox_1.Type.Optional(typebox_1.Type.String({ description: "ISO 8601 due date/time (e.g. 2026-03-14T00:00:00Z)" })),
-                owner_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
             }),
             async execute(_toolCallId, params) {
-                const { description, due_at, owner_id } = params;
+                const { description, due_at } = params;
                 try {
-                    const result = await client.addCommitment(description, due_at, owner_id);
+                    const result = await client.addCommitment(description, due_at);
                     if (!result) {
                         return { content: [{ type: "text", text: "Failed to create commitment." }] };
                     }
@@ -1664,12 +1698,11 @@ const cortexPlugin = {
             parameters: typebox_1.Type.Object({
                 id: typebox_1.Type.String({ description: "Commitment ID to update" }),
                 status: typebox_1.Type.String({ description: "New status: completed or cancelled" }),
-                owner_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
             }),
             async execute(_toolCallId, params) {
-                const { id, status, owner_id } = params;
+                const { id, status } = params;
                 try {
-                    const result = await client.updateCommitment(id, status, owner_id);
+                    const result = await client.updateCommitment(id, status);
                     if (!result) {
                         return { content: [{ type: "text", text: `Failed to update commitment ${id}.` }] };
                     }
@@ -1686,12 +1719,11 @@ const cortexPlugin = {
             description: "List active or all commitments tracked in Cortex.",
             parameters: typebox_1.Type.Object({
                 status: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Filter by status: active, completed, cancelled" })),
-                owner_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
             }),
             async execute(_toolCallId, params) {
-                const { status, owner_id } = params;
+                const { status } = params;
                 try {
-                    const result = await client.listCommitments(owner_id, status);
+                    const result = await client.listCommitments(status);
                     if (!result) {
                         return { content: [{ type: "text", text: "Failed to fetch commitments." }] };
                     }
@@ -1855,12 +1887,11 @@ const cortexPlugin = {
             description: "Create an open loop (unresolved thread) in Cortex. Use to track topics or threads left unfinished.",
             parameters: typebox_1.Type.Object({
                 description: typebox_1.Type.String({ description: "Description of the unresolved thread or topic" }),
-                owner_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
             }),
             async execute(_toolCallId, params) {
-                const { description, owner_id } = params;
+                const { description } = params;
                 try {
-                    const result = await client.addOpenLoop(description, owner_id);
+                    const result = await client.addOpenLoop(description);
                     if (!result) {
                         return { content: [{ type: "text", text: "Failed to create open loop." }] };
                     }
@@ -1878,12 +1909,11 @@ const cortexPlugin = {
             description: "Mark an open loop as resolved.",
             parameters: typebox_1.Type.Object({
                 id: typebox_1.Type.String({ description: "Open loop ID to resolve" }),
-                owner_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
             }),
             async execute(_toolCallId, params) {
-                const { id, owner_id } = params;
+                const { id } = params;
                 try {
-                    const result = await client.resolveOpenLoop(id, owner_id);
+                    const result = await client.resolveOpenLoop(id);
                     if (!result) {
                         return { content: [{ type: "text", text: `Failed to resolve open loop ${id}.` }] };
                     }
@@ -1900,12 +1930,11 @@ const cortexPlugin = {
             description: "List open (unresolved) threads tracked in Cortex.",
             parameters: typebox_1.Type.Object({
                 status: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Filter by status: open, resolved" })),
-                owner_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Memory owner namespace (defaults to configured owner)" })),
             }),
             async execute(_toolCallId, params) {
-                const { status, owner_id } = params;
+                const { status } = params;
                 try {
-                    const result = await client.listOpenLoops(owner_id, status);
+                    const result = await client.listOpenLoops(status);
                     if (!result) {
                         return { content: [{ type: "text", text: "Failed to fetch open loops." }] };
                     }
