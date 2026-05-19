@@ -108,6 +108,9 @@ directly:
 | `cortex_update_commitment` | Mark a commitment as completed or cancelled |
 | `cortex_list_commitments` | List active (or all) tracked commitments |
 | `cortex_insights` | List pending or accepted Cortex insights |
+| `cortex_entities_list` | List owner-resolved Cortex entities |
+| `cortex_entity_detail` | Fetch one entity with aliases, claims, and relationships |
+| `cortex_graph_query` | Fetch the owner-resolved entity relationship graph |
 | `cortex_add_open_loop` | Track an unresolved thread or topic |
 | `cortex_resolve_open_loop` | Mark an open loop as resolved |
 | `cortex_list_open_loops` | List unresolved threads |
@@ -127,6 +130,10 @@ proxy deployments, leave `ownerIdMode` at `server_resolved` so Cortex derives
 the effective owner from the authenticated request. `ownerIdMode: "configured"`
 is retained for self-host installs that deliberately use the configured
 `ownerId` as their local namespace.
+
+Entity and graph tools are read-only and use the same owner-resolution path as
+memory tools. Use `cortex_entities_list` first to resolve entity IDs, then
+`cortex_entity_detail` or `cortex_graph_query` for the cited relationship view.
 
 For customer/account workspaces, `companyBrainContextMode: "auto"` enables a
 separate `<company-brain-context>` block. The block is distinct from

@@ -114,6 +114,31 @@ function item(overrides) {
     strict_1.default.doesNotMatch(formatted, /⚠️/);
 }
 {
+    const logs = [];
+    const originalInfo = console.info;
+    console.info = (message) => {
+        logs.push(String(message));
+    };
+    try {
+        const items = [
+            item({ item_id: "fits1111", content: "Short memory", score: 0.95 }),
+            item({ item_id: "large222", content: "Large memory ".repeat(600), score: 0.94 }),
+        ];
+        const formatted = (0, index_1.formatMemoryContext)(items, 2500, items.length, 8, 0.25, {
+            injectionFormat: "v2",
+            showConflicts: true,
+            showRelations: true,
+            dedup: true,
+        });
+        strict_1.default.match(formatted, /\[1 of 2 memories shown/);
+        strict_1.default.equal(logs.length, 1);
+        strict_1.default.match(logs[0] ?? "", /\[cortex\] memories-injected=1\/2 chars=\d+\/2500/);
+    }
+    finally {
+        console.info = originalInfo;
+    }
+}
+{
     const cfg = (0, index_1.parseEvaMemoryConfig)({
         injectionHardFloor: Number.NaN,
         injectionCriticalThreshold: Number.POSITIVE_INFINITY,

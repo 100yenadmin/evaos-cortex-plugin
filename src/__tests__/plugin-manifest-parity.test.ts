@@ -28,4 +28,15 @@ assert.ok(
   "dist manifest is missing cortex_insights",
 );
 
+for (const toolName of [
+  "cortex_entities_list",
+  "cortex_entity_detail",
+  "cortex_graph_query",
+]) {
+  assert.ok(
+    distManifest.tools.includes(toolName),
+    `dist manifest is missing ${toolName}`,
+  );
+}
+
 console.log("plugin-manifest-parity tests passed");

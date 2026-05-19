@@ -21,12 +21,14 @@
  * Tools: cortex_search, cortex_remember, cortex_forget, cortex_ask,
  *        cortex_list_contradictions, cortex_resolve_contradiction,
  *        cortex_add_commitment, cortex_update_commitment, cortex_list_commitments,
+ *        cortex_entities_list, cortex_entity_detail, cortex_graph_query,
  *        cortex_add_open_loop, cortex_resolve_open_loop, cortex_list_open_loops
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.shouldSendConfiguredOwner = shouldSendConfiguredOwner;
 exports.withConfiguredOwner = withConfiguredOwner;
 exports.formatCompanyBrainToolResult = formatCompanyBrainToolResult;
+exports.formatCortexToolResult = formatCortexToolResult;
 exports.formatCompanyBrainContext = formatCompanyBrainContext;
 exports.resolveCompanyBrainAccountFromAccountsList = resolveCompanyBrainAccountFromAccountsList;
 exports.parseEvaMemoryConfig = parseEvaMemoryConfig;
@@ -71,6 +73,12 @@ function addOwnerParam(params, ownerId, ownerIdMode) {
         params.set("owner_id", ownerId);
 }
 function formatCompanyBrainToolResult(label, result) {
+    if (!result) {
+        return `${label} failed: Cortex returned no result.`;
+    }
+    return `${label}:\n${JSON.stringify(result, null, 2)}`;
+}
+function formatCortexToolResult(label, result) {
     if (!result) {
         return `${label} failed: Cortex returned no result.`;
     }
@@ -482,6 +490,33 @@ class CortexClient {
         if (status)
             params.set("status", status);
         return this.get(this.withQuery("/api/v1/open-loops", params));
+    }
+    // --- Entities + Graph ---
+    async listEntities(options = {}) {
+        const limit = clampNumber(options.limit, 50, 1, 200);
+        const offset = clampNumber(options.offset, 0, 0, 1000000);
+        const page = Math.floor(offset / limit) + 1;
+        const params = this.ownerParams({
+            page: String(page),
+            per_page: String(limit),
+            limit: String(limit),
+            offset: String(offset),
+        });
+        addOptionalParam(params, "entity_type", options.entityType);
+        addOptionalParam(params, "search", options.search);
+        return this.get(this.withQuery("/api/v1/entities", params));
+    }
+    async getEntityDetail(entityId) {
+        const params = this.ownerParams();
+        return this.get(this.withQuery(`/api/v1/entities/${encodeURIComponent(entityId)}`, params));
+    }
+    async queryGraph(options = {}) {
+        const params = this.ownerParams({
+            max_depth: String(clampNumber(options.maxDepth, 2, 1, 5)),
+            max_nodes: String(clampNumber(options.maxNodes, 50, 1, 200)),
+        });
+        addOptionalParam(params, "center_entity_id", options.centerEntityId);
+        return this.get(this.withQuery("/api/v1/graph", params));
     }
     // --- Company Brain ---
     async listCompanyBrainAccounts(options = {}) {
@@ -1320,6 +1355,7 @@ function formatMemoryContextV1(items, maxChars, totalCount = items.length, maxCo
     const lines = ["<relevant-memories>", MEMORY_PREAMBLE];
     let charCount = MEMORY_PREAMBLE.length;
     let injectedCount = 0;
+    let truncatedByCharCap = false;
     for (const item of relevant.slice(0, maxCount)) {
         const tag = item.source === "cornerstone" ? " [cornerstone]" : "";
         const id = item.item_id ? `[${item.item_id.slice(0, 8)}]` : "";
@@ -1332,14 +1368,19 @@ function formatMemoryContextV1(items, maxChars, totalCount = items.length, maxCo
         const line = prefix
             ? `- ${prefix} ${item.content}${tag}`
             : `- ${item.content}${tag}`;
-        if (charCount + line.length > maxChars)
+        if (charCount + line.length > maxChars) {
+            truncatedByCharCap = true;
             break;
+        }
         lines.push(line);
         charCount += line.length;
         injectedCount++;
     }
     if (lines.length <= 2)
         return "";
+    if (truncatedByCharCap) {
+        console.info(`[cortex] memories-injected=${injectedCount}/${totalCount} chars=${charCount}/${maxChars}`);
+    }
     lines.push(`[${injectedCount} of ${totalCount} memories shown — use cortex_search for more]`);
     lines.push("</relevant-memories>");
     return lines.join("\n");
@@ -1353,13 +1394,16 @@ function formatMemoryContextV2(items, maxChars, totalCount = items.length, maxCo
     const lines = ["<relevant-memories>", MEMORY_PREAMBLE];
     let charCount = MEMORY_PREAMBLE.length;
     let injectedCount = 0;
+    let truncatedByCharCap = false;
     const processed = preprocessClaims(relevant, options);
     for (const entry of processed.slice(0, maxCount)) {
         const line = formatMemoryLine(entry.item, entry);
         const relationLine = entry.relationHint ? `  ↳ ${entry.relationHint}` : "";
         const needed = line.length + (relationLine ? relationLine.length + 1 : 0);
-        if (charCount + needed > maxChars)
+        if (charCount + needed > maxChars) {
+            truncatedByCharCap = true;
             break;
+        }
         lines.push(line);
         if (relationLine)
             lines.push(relationLine);
@@ -1368,6 +1412,9 @@ function formatMemoryContextV2(items, maxChars, totalCount = items.length, maxCo
     }
     if (lines.length <= 2)
         return "";
+    if (truncatedByCharCap) {
+        console.info(`[cortex] memories-injected=${injectedCount}/${totalCount} chars=${charCount}/${maxChars}`);
+    }
     lines.push(`[${injectedCount} of ${totalCount} memories shown — use cortex_search for more]`);
     lines.push("</relevant-memories>");
     return lines.join("\n");
@@ -1778,6 +1825,74 @@ const cortexPlugin = {
                 }
             },
         }, { name: "cortex_insights" });
+        api.registerTool({
+            name: "cortex_entities_list",
+            label: "Cortex Entities List",
+            description: "List owner-resolved Cortex entities through the Cortex HTTP API. Read-only; use this to find stable entity IDs before entity detail or graph calls.",
+            parameters: typebox_1.Type.Object({
+                entity_type: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Optional entity type filter, such as person, organization, project, or topic" })),
+                search: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Optional entity search text" })),
+                limit: typebox_1.Type.Optional(typebox_1.Type.Number({ description: "Max entities to return, 1-200 (default: 50)" })),
+                offset: typebox_1.Type.Optional(typebox_1.Type.Number({ description: "Zero-based entity offset (default: 0)" })),
+            }),
+            async execute(_toolCallId, params) {
+                const { entity_type, search, limit, offset } = params;
+                try {
+                    const result = await client.listEntities({
+                        entityType: entity_type,
+                        search,
+                        limit,
+                        offset,
+                    });
+                    return { content: [{ type: "text", text: formatCortexToolResult("Cortex entities", result) }] };
+                }
+                catch (err) {
+                    return { content: [{ type: "text", text: `Cortex entities list failed: ${String(err)}` }] };
+                }
+            },
+        }, { name: "cortex_entities_list" });
+        api.registerTool({
+            name: "cortex_entity_detail",
+            label: "Cortex Entity Detail",
+            description: "Fetch one owner-resolved Cortex entity with aliases, claims, and relationships. Read-only; call cortex_entities_list first when you need an ID.",
+            parameters: typebox_1.Type.Object({
+                entity_id: typebox_1.Type.String({ description: "Stable Cortex entity ID from cortex_entities_list" }),
+            }),
+            async execute(_toolCallId, params) {
+                const { entity_id } = params;
+                try {
+                    const result = await client.getEntityDetail(entity_id);
+                    return { content: [{ type: "text", text: formatCortexToolResult("Cortex entity detail", result) }] };
+                }
+                catch (err) {
+                    return { content: [{ type: "text", text: `Cortex entity detail failed: ${String(err)}` }] };
+                }
+            },
+        }, { name: "cortex_entity_detail" });
+        api.registerTool({
+            name: "cortex_graph_query",
+            label: "Cortex Graph Query",
+            description: "Fetch the owner-resolved Cortex entity relationship graph. Read-only; optionally center the graph on one entity ID.",
+            parameters: typebox_1.Type.Object({
+                center_entity_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Optional entity ID to center the graph on" })),
+                max_depth: typebox_1.Type.Optional(typebox_1.Type.Number({ description: "Max graph traversal depth, 1-5 (default: 2)" })),
+                max_nodes: typebox_1.Type.Optional(typebox_1.Type.Number({ description: "Max graph nodes to return, 1-200 (default: 50)" })),
+            }),
+            async execute(_toolCallId, params) {
+                const { center_entity_id, max_depth, max_nodes } = params;
+                try {
+                    const result = await client.queryGraph({
+                        centerEntityId: center_entity_id,
+                        maxDepth: max_depth,
+                        maxNodes: max_nodes,
+                    });
+                    return { content: [{ type: "text", text: formatCortexToolResult("Cortex graph", result) }] };
+                }
+                catch (err) {
+                    return { content: [{ type: "text", text: `Cortex graph query failed: ${String(err)}` }] };
+                }
+            },
+        }, { name: "cortex_graph_query" });
         api.registerTool({
             name: "company_brain_accounts_list",
             label: "Company Brain Accounts List",

@@ -22,5 +22,12 @@ for (const property of [
     strict_1.default.ok(distManifest.configSchema.properties[property], `dist manifest is missing ${property}`);
 }
 strict_1.default.ok(distManifest.tools.includes("cortex_insights"), "dist manifest is missing cortex_insights");
+for (const toolName of [
+    "cortex_entities_list",
+    "cortex_entity_detail",
+    "cortex_graph_query",
+]) {
+    strict_1.default.ok(distManifest.tools.includes(toolName), `dist manifest is missing ${toolName}`);
+}
 console.log("plugin-manifest-parity tests passed");
 //# sourceMappingURL=plugin-manifest-parity.test.js.map

@@ -20,6 +20,7 @@
  * Tools: cortex_search, cortex_remember, cortex_forget, cortex_ask,
  *        cortex_list_contradictions, cortex_resolve_contradiction,
  *        cortex_add_commitment, cortex_update_commitment, cortex_list_commitments,
+ *        cortex_entities_list, cortex_entity_detail, cortex_graph_query,
  *        cortex_add_open_loop, cortex_resolve_open_loop, cortex_list_open_loops
  */
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -75,6 +76,7 @@ interface RetrievedItem {
     provenance?: string;
 }
 type CompanyBrainToolResult = Record<string, unknown>;
+type CortexToolResult = Record<string, unknown>;
 interface CompanyBrainContextPayload {
     account?: Record<string, unknown> | null;
     brief?: CompanyBrainToolResult | null;
@@ -97,6 +99,7 @@ export declare function withConfiguredOwner<T extends Record<string, unknown>>(b
     owner_id?: string;
 };
 export declare function formatCompanyBrainToolResult(label: string, result: CompanyBrainToolResult | null): string;
+export declare function formatCortexToolResult(label: string, result: CortexToolResult | null): string;
 export declare function formatCompanyBrainContext(payload: CompanyBrainContextPayload, options?: {
     maxChars?: number;
 }): string;
