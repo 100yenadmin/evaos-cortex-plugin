@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc && node scripts/sync-dist-manifest.mjs",
-    "test": "npm run build && node dist/__tests__/memory-context-format.test.js && node dist/__tests__/company-brain-tools.test.js && node dist/__tests__/company-brain-context-format.test.js && node dist/__tests__/plugin-manifest-parity.test.js && node dist/__tests__/owner-context.test.js",
+    "test": "npm run build && node dist/__tests__/memory-context-format.test.js && node dist/__tests__/company-brain-tools.test.js && node dist/__tests__/company-brain-context-format.test.js && node dist/__tests__/core-entity-graph-tools.test.js && node dist/__tests__/plugin-manifest-parity.test.js && node dist/__tests__/owner-context.test.js",
     "company-brain:canary": "node scripts/company-brain-canary.mjs",
     "prepublishOnly": "npm run build"
   },
