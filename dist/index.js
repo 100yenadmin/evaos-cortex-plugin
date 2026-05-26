@@ -247,6 +247,8 @@ function parseConfig(raw) {
         injectionPersonalThreshold: 0.45,
         companyBrainContextMode: "off",
         companyBrainContextAccountId: "",
+        companyBrainContextAccountKey: "",
+        companyBrainContextSourceScope: "",
         companyBrainContextSearch: "",
         companyBrainContextFactsLimit: 25,
         companyBrainContextEventsLimit: 10,
@@ -261,6 +263,9 @@ function parseConfig(raw) {
         : defaults.retrievalMode;
     const parsedInjectionFormat = c.injectionFormat === "v2" ? "v2" : defaults.injectionFormat;
     const parsedCompanyBrainContextMode = c.companyBrainContextMode === "auto" ? "auto" : defaults.companyBrainContextMode;
+    const parsedCompanyBrainContextSourceScope = c.companyBrainContextSourceScope === "internal" || c.companyBrainContextSourceScope === "customer_accounts"
+        ? c.companyBrainContextSourceScope
+        : defaults.companyBrainContextSourceScope;
     const parsedOwnerIdMode = c.ownerIdMode === "configured" ? "configured" : defaults.ownerIdMode;
     return {
         cortexUrl: typeof c.cortexUrl === "string" ? resolveEnv(c.cortexUrl) : defaults.cortexUrl,
@@ -288,6 +293,8 @@ function parseConfig(raw) {
         injectionPersonalThreshold: typeof c.injectionPersonalThreshold === "number" ? c.injectionPersonalThreshold : defaults.injectionPersonalThreshold,
         companyBrainContextMode: parsedCompanyBrainContextMode,
         companyBrainContextAccountId: typeof c.companyBrainContextAccountId === "string" ? c.companyBrainContextAccountId.trim() : defaults.companyBrainContextAccountId,
+        companyBrainContextAccountKey: typeof c.companyBrainContextAccountKey === "string" ? c.companyBrainContextAccountKey.trim() : defaults.companyBrainContextAccountKey,
+        companyBrainContextSourceScope: parsedCompanyBrainContextSourceScope,
         companyBrainContextSearch: typeof c.companyBrainContextSearch === "string" ? c.companyBrainContextSearch.trim() : defaults.companyBrainContextSearch,
         companyBrainContextFactsLimit: clampNumber(c.companyBrainContextFactsLimit, defaults.companyBrainContextFactsLimit, 1, 200),
         companyBrainContextEventsLimit: clampNumber(c.companyBrainContextEventsLimit, defaults.companyBrainContextEventsLimit, 1, 50),
@@ -523,6 +530,8 @@ class CortexClient {
         const params = new URLSearchParams();
         addOwnerParam(params, this.ownerId, this.ownerIdMode);
         addOptionalParam(params, "search", options.search);
+        addOptionalParam(params, "source_scope", options.sourceScope);
+        addOptionalParam(params, "account_key", options.accountKey);
         addOptionalParam(params, "workspace_id", options.workspaceId);
         params.set("limit", String(clampNumber(options.limit, 50, 1, 200)));
         params.set("offset", String(clampNumber(options.offset, 0, 0, 1000000)));
@@ -589,7 +598,7 @@ const COMPANY_BRAIN_CONTEXT_KEYWORDS = /\b(company brain|customer|client|account
 function shouldAttemptCompanyBrainContext(prompt, cfg) {
     if (cfg.companyBrainContextMode !== "auto")
         return false;
-    if (cfg.companyBrainContextAccountId || cfg.companyBrainContextSearch)
+    if (cfg.companyBrainContextAccountId || cfg.companyBrainContextAccountKey || cfg.companyBrainContextSearch)
         return true;
     return COMPANY_BRAIN_CONTEXT_KEYWORDS.test(prompt ?? "");
 }
@@ -604,12 +613,19 @@ function normalizeCompanyBrainAccounts(result) {
 function companyBrainAccountId(account) {
     return firstString(account, ["id", "account_id", "customer_id"]);
 }
+function companyBrainAccountKey(account) {
+    return firstString(account, ["account_key", "external_id", "source_external_id", "customer_key"]);
+}
 function resolveCompanyBrainAccountFromAccountsList(accountsResult, options = {}) {
     const accounts = normalizeCompanyBrainAccounts(accountsResult);
     const configuredAccountId = options.configuredAccountId?.trim();
-    const candidates = configuredAccountId
-        ? accounts.filter(account => companyBrainAccountId(account) === configuredAccountId)
+    const accountKey = options.accountKey?.trim();
+    let candidates = accountKey
+        ? accounts.filter(account => companyBrainAccountKey(account) === accountKey)
         : accounts;
+    if (configuredAccountId) {
+        candidates = candidates.filter(account => companyBrainAccountId(account) === configuredAccountId);
+    }
     if (candidates.length !== 1)
         return null;
     const account = candidates[0];
@@ -623,22 +639,28 @@ function resolveCompanyBrainAccountFromAccountsList(accountsResult, options = {}
             source: "company_brain_accounts_list",
             search: options.search,
             configured_account_id: configuredAccountId || undefined,
+            account_key: accountKey || undefined,
+            source_scope: options.sourceScope || undefined,
             total: accountsResult?.total,
             resolved_count: candidates.length,
         },
     };
 }
 async function resolveCompanyBrainAccountForContext(client, cfg, prompt) {
+    const hasStableResolver = Boolean(cfg.companyBrainContextAccountId || cfg.companyBrainContextAccountKey);
     const search = cfg.companyBrainContextSearch ||
-        cfg.companyBrainContextAccountId ||
-        (prompt ?? "").slice(0, 240);
+        (!hasStableResolver ? (prompt ?? "").slice(0, 240) : "");
     const accountsResult = await client.listCompanyBrainAccounts({
         search,
-        limit: cfg.companyBrainContextAccountId ? 20 : 2,
+        sourceScope: cfg.companyBrainContextSourceScope,
+        accountKey: cfg.companyBrainContextAccountKey,
+        limit: cfg.companyBrainContextAccountId || cfg.companyBrainContextAccountKey ? 20 : 2,
         offset: 0,
     });
     return resolveCompanyBrainAccountFromAccountsList(accountsResult, {
         configuredAccountId: cfg.companyBrainContextAccountId,
+        accountKey: cfg.companyBrainContextAccountKey,
+        sourceScope: cfg.companyBrainContextSourceScope,
         search,
     });
 }
@@ -1511,6 +1533,8 @@ const cortexPlugin = {
                 injectionPersonalThreshold: { type: "number", description: "Min score in personal/casual mode (default: 0.45)" },
                 companyBrainContextMode: { type: "string", enum: ["off", "auto"], description: "Opt-in Company Brain context injection mode. Default: off." },
                 companyBrainContextAccountId: { type: "string", description: "Stable Company Brain account ID to inject when companyBrainContextMode is auto." },
+                companyBrainContextAccountKey: { type: "string", description: "Stable business account key to resolve when companyBrainContextMode is auto, for example company:electricsheep-internal." },
+                companyBrainContextSourceScope: { type: "string", enum: ["internal", "customer_accounts"], description: "Optional Company Brain source scope filter for context injection." },
                 companyBrainContextSearch: { type: "string", description: "Account search text used with company_brain_accounts_list when no account ID is configured." },
                 companyBrainContextFactsLimit: { type: "number", description: "Max account facts to request for Company Brain context (default: 25)." },
                 companyBrainContextEventsLimit: { type: "number", description: "Max action-readiness events to request for Company Brain context (default: 10)." },
@@ -1899,15 +1923,22 @@ const cortexPlugin = {
             description: "List or search source-backed Company Brain accounts through the Cortex HTTP API. Use this first to resolve stable account IDs before brief, timeline, or query calls.",
             parameters: typebox_1.Type.Object({
                 search: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Optional account/workspace search text" })),
+                source_scope: typebox_1.Type.Optional(typebox_1.Type.Union([
+                    typebox_1.Type.Literal("internal"),
+                    typebox_1.Type.Literal("customer_accounts"),
+                ], { description: "Optional Company Brain account source scope filter" })),
+                account_key: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Optional stable business account key, for example company:electricsheep-internal" })),
                 workspace_id: typebox_1.Type.Optional(typebox_1.Type.String({ description: "Optional Cortex Company Brain workspace ID" })),
                 limit: typebox_1.Type.Optional(typebox_1.Type.Number({ description: "Max accounts to return, 1-200 (default: 50)" })),
                 offset: typebox_1.Type.Optional(typebox_1.Type.Number({ description: "Zero-based account offset (default: 0)" })),
             }),
             async execute(_toolCallId, params) {
-                const { search, workspace_id, limit, offset } = params;
+                const { search, source_scope, account_key, workspace_id, limit, offset } = params;
                 try {
                     const result = await client.listCompanyBrainAccounts({
                         search,
+                        sourceScope: source_scope,
+                        accountKey: account_key,
                         workspaceId: workspace_id,
                         limit,
                         offset,

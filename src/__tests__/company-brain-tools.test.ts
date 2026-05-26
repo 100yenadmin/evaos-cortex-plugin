@@ -7,6 +7,20 @@ import { formatCompanyBrainToolResult, parseEvaMemoryConfig } from "../index";
 }
 
 {
+  const cfg = parseEvaMemoryConfig({
+    companyBrainContextAccountKey: "company:electricsheep-internal",
+    companyBrainContextSourceScope: "internal",
+  });
+  assert.equal(cfg.companyBrainContextAccountKey, "company:electricsheep-internal");
+  assert.equal(cfg.companyBrainContextSourceScope, "internal");
+}
+
+{
+  const cfg = parseEvaMemoryConfig({ companyBrainContextSourceScope: "wrong" });
+  assert.equal(cfg.companyBrainContextSourceScope, "");
+}
+
+{
   const rendered = formatCompanyBrainToolResult("Company Brain query", {
     ok: true,
     evidence_status: "insufficient_evidence",

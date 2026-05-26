@@ -9,6 +9,8 @@ import {
   const cfg = parseEvaMemoryConfig({
     companyBrainContextMode: "auto",
     companyBrainContextAccountId: "acct_acme",
+    companyBrainContextAccountKey: "company:acme",
+    companyBrainContextSourceScope: "customer_accounts",
     companyBrainContextSearch: "Acme Clinic",
     companyBrainContextFactsLimit: 12,
     companyBrainContextEventsLimit: 7,
@@ -17,6 +19,8 @@ import {
 
   assert.equal(cfg.companyBrainContextMode, "auto");
   assert.equal(cfg.companyBrainContextAccountId, "acct_acme");
+  assert.equal(cfg.companyBrainContextAccountKey, "company:acme");
+  assert.equal(cfg.companyBrainContextSourceScope, "customer_accounts");
   assert.equal(cfg.companyBrainContextSearch, "Acme Clinic");
   assert.equal(cfg.companyBrainContextFactsLimit, 12);
   assert.equal(cfg.companyBrainContextEventsLimit, 7);
@@ -28,12 +32,14 @@ import {
     {
       accounts: [
         { id: "acct_other", name: "Other Clinic" },
-        { id: "acct_acme", name: "Acme Clinic", visibility_scope: "account" },
+        { id: "acct_acme", name: "Acme Clinic", account_key: "company:acme", visibility_scope: "account" },
       ],
       total: 2,
     },
     {
       configuredAccountId: "acct_acme",
+      accountKey: "company:acme",
+      sourceScope: "customer_accounts",
       search: "acct_acme",
     },
   );
@@ -42,6 +48,8 @@ import {
   assert.equal(resolved?.account.name, "Acme Clinic");
   assert.equal(resolved?.resolution.source, "company_brain_accounts_list");
   assert.equal(resolved?.resolution.configured_account_id, "acct_acme");
+  assert.equal(resolved?.resolution.account_key, "company:acme");
+  assert.equal(resolved?.resolution.source_scope, "customer_accounts");
 }
 
 {
@@ -59,6 +67,26 @@ import {
   );
 
   assert.equal(resolved, null);
+}
+
+{
+  const resolved = resolveCompanyBrainAccountFromAccountsList(
+    {
+      accounts: [
+        { id: "acct_internal", name: "ElectricSheep Internal", account_key: "company:electricsheep-internal" },
+        { id: "acct_customer", name: "Customer Account", account_key: "company:customer" },
+      ],
+      total: 2,
+    },
+    {
+      accountKey: "company:electricsheep-internal",
+      sourceScope: "internal",
+    },
+  );
+
+  assert.equal(resolved?.accountId, "acct_internal");
+  assert.equal(resolved?.resolution.account_key, "company:electricsheep-internal");
+  assert.equal(resolved?.resolution.source_scope, "internal");
 }
 
 {

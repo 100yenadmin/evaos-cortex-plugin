@@ -76,6 +76,8 @@ cd cortex && npm install --omit=dev
 | `retrievalMode` | `string` | `fast` | Retrieval mode: `auto`, `fast`, or `thorough` |
 | `companyBrainContextMode` | `string` | `off` | Opt-in Company Brain context injection: `off` or `auto` |
 | `companyBrainContextAccountId` | `string` | — | Stable account ID for account-scoped Company Brain context |
+| `companyBrainContextAccountKey` | `string` | — | Stable business account key, for example `company:electricsheep-internal` |
+| `companyBrainContextSourceScope` | `string` | — | Optional account scope filter: `internal` or `customer_accounts` |
 | `companyBrainContextSearch` | `string` | — | Account search text used when no account ID is configured |
 | `companyBrainContextFactsLimit` | `number` | `25` | Max account facts requested for Company Brain context |
 | `companyBrainContextEventsLimit` | `number` | `10` | Max action-readiness events requested for Company Brain context |
@@ -138,9 +140,20 @@ memory tools. Use `cortex_entities_list` first to resolve entity IDs, then
 For customer/account workspaces, `companyBrainContextMode: "auto"` enables a
 separate `<company-brain-context>` block. The block is distinct from
 `<relevant-memories>`, resolves the account through the Company Brain account
-path even when a stable account ID is configured, preserves cited evidence and
-action-readiness metadata, surfaces open follow-ups, and marks approval-gated
-items as read-only operator-review candidates rather than executable actions.
+path even when a stable account ID or account key is configured, preserves cited
+evidence and action-readiness metadata, surfaces open follow-ups, and marks
+approval-gated items as read-only operator-review candidates rather than
+executable actions.
+
+For the ElectricSheep internal beta, configure the internal account explicitly:
+
+```jsonc
+{
+  "companyBrainContextMode": "auto",
+  "companyBrainContextSourceScope": "internal",
+  "companyBrainContextAccountKey": "company:electricsheep-internal"
+}
+```
 
 ## How It Works
 

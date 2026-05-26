@@ -25,20 +25,37 @@ self-hosted installs and owner-bound API-key deployments. Hosted Cortex remains
 authoritative: non-admin/JWT callers cannot override the authenticated owner.
 
 Agents should call `company_brain_accounts_list` before account brief, timeline,
-or query tools. Do not flatten Company Brain account context into generic
-personal memory. Treat `insufficient_evidence` as a successful honest response,
-not as a tool failure.
+or query tools. The account-list tool accepts optional `source_scope` and
+`account_key` filters so internal beta context can resolve
+`source_scope=internal` plus `account_key=company:electricsheep-internal`
+without scanning the customer-account directory. Do not flatten Company Brain
+account context into generic personal memory. Treat `insufficient_evidence` as a
+successful honest response, not as a tool failure.
 
 ## Account-Scoped Context Injection
 
 Company Brain context injection is opt-in. Set `companyBrainContextMode` to
-`auto` and either provide `companyBrainContextAccountId` or
-`companyBrainContextSearch`. If no account ID is configured, the plugin uses
-the same account-list implementation path as `company_brain_accounts_list` and
+`auto` and provide one of `companyBrainContextAccountId`,
+`companyBrainContextAccountKey`, or `companyBrainContextSearch`. Use
+`companyBrainContextSourceScope` to restrict context to `internal` or
+`customer_accounts`. If no account ID/key is configured, the plugin uses the
+same account-list implementation path as `company_brain_accounts_list` and
 injects context only when it resolves one account.
 When an account ID is configured, the plugin still resolves it through the
 account-list path and injects only if the returned account list contains that
 exact stable ID.
+When an account key is configured, the plugin resolves the key through the
+account-list path and injects only if exactly one returned account matches it.
+
+ElectricSheep internal beta context should use:
+
+```jsonc
+{
+  "companyBrainContextMode": "auto",
+  "companyBrainContextSourceScope": "internal",
+  "companyBrainContextAccountKey": "company:electricsheep-internal"
+}
+```
 
 Injected Company Brain context uses a distinct `<company-brain-context>` block,
 not `<relevant-memories>`. It is account-scoped business context and
@@ -63,6 +80,8 @@ Run the live canary against a local or staged Cortex endpoint:
 CORTEX_URL=http://localhost:8000 \
 CORTEX_API_KEY=... \
 CORTEX_OWNER_ID=company-acme \
+COMPANY_BRAIN_SOURCE_SCOPE=internal \
+COMPANY_BRAIN_ACCOUNT_KEY=company:electricsheep-internal \
 COMPANY_BRAIN_ACCOUNT_ID=optional-account-id \
 npm run company-brain:canary
 ```

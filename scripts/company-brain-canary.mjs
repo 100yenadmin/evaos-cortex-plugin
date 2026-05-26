@@ -4,6 +4,8 @@ const cortexUrl = (process.env.CORTEX_URL || "http://localhost:8000").replace(/\
 const apiKey = process.env.CORTEX_API_KEY || "";
 const ownerId = process.env.CORTEX_OWNER_ID || "";
 let accountId = process.env.COMPANY_BRAIN_ACCOUNT_ID || "";
+const accountKey = process.env.COMPANY_BRAIN_ACCOUNT_KEY || "";
+const sourceScope = process.env.COMPANY_BRAIN_SOURCE_SCOPE || "";
 
 function headers() {
   const h = { "Content-Type": "application/json" };
@@ -61,15 +63,23 @@ async function request(stage, path, options = {}) {
 async function main() {
   const stages = [];
   const accountParams = withOwner(new URLSearchParams({ limit: "5", offset: "0" }));
+  if (accountKey) accountParams.set("account_key", accountKey);
+  if (sourceScope) accountParams.set("source_scope", sourceScope);
   const accounts = await request("account_resolution", `/api/v1/company-brain/accounts?${accountParams}`);
   stages.push({
     stage: "account_resolution",
     status: "passed",
     total: accounts?.total ?? 0,
+    account_key: accountKey || undefined,
+    source_scope: sourceScope || undefined,
   });
 
   if (!accountId) {
-    accountId = accounts?.accounts?.[0]?.id || "";
+    const listedAccounts = Array.isArray(accounts?.accounts) ? accounts.accounts : [];
+    const matchingAccount = accountKey
+      ? listedAccounts.find((account) => account?.account_key === accountKey || account?.external_id === accountKey)
+      : listedAccounts[0];
+    accountId = matchingAccount?.id || matchingAccount?.account_id || "";
   }
   if (!accountId) {
     console.log(JSON.stringify({ ok: true, stages, note: "no accounts found; account-list route/auth smoke passed" }, null, 2));

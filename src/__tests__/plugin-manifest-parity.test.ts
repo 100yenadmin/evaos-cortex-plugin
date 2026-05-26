@@ -12,6 +12,8 @@ for (const property of [
   "ownerIdMode",
   "companyBrainContextMode",
   "companyBrainContextAccountId",
+  "companyBrainContextAccountKey",
+  "companyBrainContextSourceScope",
   "companyBrainContextSearch",
   "companyBrainContextFactsLimit",
   "companyBrainContextEventsLimit",
