@@ -10,6 +10,18 @@ const index_1 = require("../index");
     strict_1.default.equal(cfg.ownerId, "company-acme");
 }
 {
+    const cfg = (0, index_1.parseEvaMemoryConfig)({
+        companyBrainContextAccountKey: "company:electricsheep-internal",
+        companyBrainContextSourceScope: "internal",
+    });
+    strict_1.default.equal(cfg.companyBrainContextAccountKey, "company:electricsheep-internal");
+    strict_1.default.equal(cfg.companyBrainContextSourceScope, "internal");
+}
+{
+    const cfg = (0, index_1.parseEvaMemoryConfig)({ companyBrainContextSourceScope: "wrong" });
+    strict_1.default.equal(cfg.companyBrainContextSourceScope, "");
+}
+{
     const rendered = (0, index_1.formatCompanyBrainToolResult)("Company Brain query", {
         ok: true,
         evidence_status: "insufficient_evidence",

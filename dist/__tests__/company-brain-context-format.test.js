@@ -9,6 +9,8 @@ const index_1 = require("../index");
     const cfg = (0, index_1.parseEvaMemoryConfig)({
         companyBrainContextMode: "auto",
         companyBrainContextAccountId: "acct_acme",
+        companyBrainContextAccountKey: "company:acme",
+        companyBrainContextSourceScope: "customer_accounts",
         companyBrainContextSearch: "Acme Clinic",
         companyBrainContextFactsLimit: 12,
         companyBrainContextEventsLimit: 7,
@@ -16,6 +18,8 @@ const index_1 = require("../index");
     });
     strict_1.default.equal(cfg.companyBrainContextMode, "auto");
     strict_1.default.equal(cfg.companyBrainContextAccountId, "acct_acme");
+    strict_1.default.equal(cfg.companyBrainContextAccountKey, "company:acme");
+    strict_1.default.equal(cfg.companyBrainContextSourceScope, "customer_accounts");
     strict_1.default.equal(cfg.companyBrainContextSearch, "Acme Clinic");
     strict_1.default.equal(cfg.companyBrainContextFactsLimit, 12);
     strict_1.default.equal(cfg.companyBrainContextEventsLimit, 7);
@@ -25,17 +29,21 @@ const index_1 = require("../index");
     const resolved = (0, index_1.resolveCompanyBrainAccountFromAccountsList)({
         accounts: [
             { id: "acct_other", name: "Other Clinic" },
-            { id: "acct_acme", name: "Acme Clinic", visibility_scope: "account" },
+            { id: "acct_acme", name: "Acme Clinic", account_key: "company:acme", visibility_scope: "account" },
         ],
         total: 2,
     }, {
         configuredAccountId: "acct_acme",
+        accountKey: "company:acme",
+        sourceScope: "customer_accounts",
         search: "acct_acme",
     });
     strict_1.default.equal(resolved?.accountId, "acct_acme");
     strict_1.default.equal(resolved?.account.name, "Acme Clinic");
     strict_1.default.equal(resolved?.resolution.source, "company_brain_accounts_list");
     strict_1.default.equal(resolved?.resolution.configured_account_id, "acct_acme");
+    strict_1.default.equal(resolved?.resolution.account_key, "company:acme");
+    strict_1.default.equal(resolved?.resolution.source_scope, "customer_accounts");
 }
 {
     const resolved = (0, index_1.resolveCompanyBrainAccountFromAccountsList)({
@@ -48,6 +56,21 @@ const index_1 = require("../index");
         search: "acct_acme",
     });
     strict_1.default.equal(resolved, null);
+}
+{
+    const resolved = (0, index_1.resolveCompanyBrainAccountFromAccountsList)({
+        accounts: [
+            { id: "acct_internal", name: "ElectricSheep Internal", account_key: "company:electricsheep-internal" },
+            { id: "acct_customer", name: "Customer Account", account_key: "company:customer" },
+        ],
+        total: 2,
+    }, {
+        accountKey: "company:electricsheep-internal",
+        sourceScope: "internal",
+    });
+    strict_1.default.equal(resolved?.accountId, "acct_internal");
+    strict_1.default.equal(resolved?.resolution.account_key, "company:electricsheep-internal");
+    strict_1.default.equal(resolved?.resolution.source_scope, "internal");
 }
 {
     const rendered = (0, index_1.formatCompanyBrainContext)({

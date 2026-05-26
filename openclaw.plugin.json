@@ -118,6 +118,18 @@
         "type": "string",
         "description": "Stable Company Brain account ID to inject when companyBrainContextMode is auto"
       },
+      "companyBrainContextAccountKey": {
+        "type": "string",
+        "description": "Stable business account key to resolve when companyBrainContextMode is auto, for example company:electricsheep-internal"
+      },
+      "companyBrainContextSourceScope": {
+        "type": "string",
+        "enum": [
+          "internal",
+          "customer_accounts"
+        ],
+        "description": "Optional Company Brain source scope filter for context injection"
+      },
       "companyBrainContextSearch": {
         "type": "string",
         "description": "Account search text used with company_brain_accounts_list when no account ID is configured"

@@ -25,6 +25,7 @@
  */
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 export type OwnerContextMode = "server_resolved" | "configured";
+type CompanyBrainSourceScope = "" | "internal" | "customer_accounts";
 interface EvaMemoryConfig {
     cortexUrl: string;
     apiKey: string;
@@ -51,6 +52,8 @@ interface EvaMemoryConfig {
     injectionPersonalThreshold: number;
     companyBrainContextMode: "off" | "auto";
     companyBrainContextAccountId: string;
+    companyBrainContextAccountKey: string;
+    companyBrainContextSourceScope: CompanyBrainSourceScope;
     companyBrainContextSearch: string;
     companyBrainContextFactsLimit: number;
     companyBrainContextEventsLimit: number;
@@ -106,6 +109,8 @@ export declare function formatCompanyBrainContext(payload: CompanyBrainContextPa
 declare function parseConfig(raw: unknown): EvaMemoryConfig;
 export declare function resolveCompanyBrainAccountFromAccountsList(accountsResult: CompanyBrainToolResult | null, options?: {
     configuredAccountId?: string;
+    accountKey?: string;
+    sourceScope?: CompanyBrainSourceScope;
     search?: string;
 }): CompanyBrainResolvedAccount | null;
 /** Session risk mode for dynamic threshold selection. */
@@ -237,6 +242,15 @@ declare const cortexPlugin: {
                 };
                 companyBrainContextAccountId: {
                     type: string;
+                    description: string;
+                };
+                companyBrainContextAccountKey: {
+                    type: string;
+                    description: string;
+                };
+                companyBrainContextSourceScope: {
+                    type: string;
+                    enum: string[];
                     description: string;
                 };
                 companyBrainContextSearch: {
