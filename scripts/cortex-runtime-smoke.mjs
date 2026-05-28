@@ -9,6 +9,7 @@ const explicitEntityId = process.env.CORTEX_SMOKE_ENTITY_ID || "";
 const companyBrainAccountId = process.env.COMPANY_BRAIN_ACCOUNT_ID || "";
 const companyBrainAccountKey = process.env.COMPANY_BRAIN_ACCOUNT_KEY || "";
 const companyBrainSourceScope = process.env.COMPANY_BRAIN_SOURCE_SCOPE || "";
+const defaultRequestTimeoutMs = Number(process.env.CORTEX_RUNTIME_SMOKE_TIMEOUT_MS || "15000");
 
 function headers() {
   const result = { "Content-Type": "application/json" };
@@ -22,10 +23,25 @@ function withOwner(params) {
 }
 
 async function request(stage, path, options = {}) {
-  const response = await fetch(`${cortexUrl}${path}`, {
-    ...options,
-    headers: { ...headers(), ...(options.headers || {}) },
-  });
+  const { timeoutMs = defaultRequestTimeoutMs, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(`${cortexUrl}${path}`, {
+      ...fetchOptions,
+      headers: { ...headers(), ...(fetchOptions.headers || {}) },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`${stage} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+
   const text = await response.text();
   let body = null;
   try {

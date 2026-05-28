@@ -169,6 +169,9 @@ COMPANY_BRAIN_ACCOUNT_KEY=company:electricsheep-internal \
 npm run runtime:smoke
 ```
 
+Omit `CORTEX_OWNER_ID` when the runtime owner mode is `server_resolved`; set it
+only for intentional configured or owner-bound smoke runs.
+
 The smoke verifies memory search, entity list/detail, graph query, and explicit
 `company_brain_*` routes. Set `CORTEX_RUNTIME_SMOKE_REQUIRE_DATA=1` when the
 target owner should already have memories, entities, graph nodes, and Company
