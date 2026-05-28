@@ -8,6 +8,7 @@
     "build": "tsc && node scripts/sync-dist-manifest.mjs",
     "test": "npm run build && node dist/__tests__/memory-context-format.test.js && node dist/__tests__/company-brain-tools.test.js && node dist/__tests__/company-brain-context-format.test.js && node dist/__tests__/core-entity-graph-tools.test.js && node dist/__tests__/plugin-manifest-parity.test.js && node dist/__tests__/owner-context.test.js",
     "company-brain:canary": "node scripts/company-brain-canary.mjs",
+    "deploy:local": "bash scripts/deploy-local-extension.sh",
     "runtime:smoke": "node scripts/cortex-runtime-smoke.mjs",
     "prepublishOnly": "npm run build"
   },
@@ -15,6 +16,11 @@
     "dist/",
     "openclaw.plugin.json"
   ],
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
   "dependencies": {
     "@sinclair/typebox": "^0.32.0"
   },
