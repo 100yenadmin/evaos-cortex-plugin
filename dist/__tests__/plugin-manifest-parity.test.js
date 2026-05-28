@@ -8,6 +8,8 @@ const node_fs_1 = __importDefault(require("node:fs"));
 const rootManifest = JSON.parse(node_fs_1.default.readFileSync("openclaw.plugin.json", "utf8"));
 const distManifest = JSON.parse(node_fs_1.default.readFileSync("dist/openclaw.plugin.json", "utf8"));
 strict_1.default.deepEqual(distManifest.tools, rootManifest.tools);
+strict_1.default.deepEqual(rootManifest.contracts?.tools, rootManifest.tools);
+strict_1.default.deepEqual(distManifest.contracts?.tools, distManifest.tools);
 strict_1.default.deepEqual(distManifest.configSchema, rootManifest.configSchema);
 strict_1.default.equal(distManifest.main, "index.js");
 for (const property of [

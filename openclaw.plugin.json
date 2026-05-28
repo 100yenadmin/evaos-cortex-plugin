@@ -27,6 +27,30 @@
     "cortex_resolve_open_loop",
     "cortex_list_open_loops"
   ],
+  "contracts": {
+    "tools": [
+      "cortex_search",
+      "cortex_remember",
+      "cortex_forget",
+      "cortex_ask",
+      "cortex_list_contradictions",
+      "cortex_resolve_contradiction",
+      "cortex_add_commitment",
+      "cortex_update_commitment",
+      "cortex_list_commitments",
+      "cortex_insights",
+      "cortex_entities_list",
+      "cortex_entity_detail",
+      "cortex_graph_query",
+      "company_brain_accounts_list",
+      "company_brain_account_brief",
+      "company_brain_account_timeline",
+      "company_brain_query",
+      "cortex_add_open_loop",
+      "cortex_resolve_open_loop",
+      "cortex_list_open_loops"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

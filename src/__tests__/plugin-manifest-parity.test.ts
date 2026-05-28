@@ -5,6 +5,8 @@ const rootManifest = JSON.parse(fs.readFileSync("openclaw.plugin.json", "utf8"))
 const distManifest = JSON.parse(fs.readFileSync("dist/openclaw.plugin.json", "utf8"));
 
 assert.deepEqual(distManifest.tools, rootManifest.tools);
+assert.deepEqual(rootManifest.contracts?.tools, rootManifest.tools);
+assert.deepEqual(distManifest.contracts?.tools, distManifest.tools);
 assert.deepEqual(distManifest.configSchema, rootManifest.configSchema);
 assert.equal(distManifest.main, "index.js");
 
