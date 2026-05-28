@@ -155,6 +155,29 @@ For the ElectricSheep internal beta, configure the internal account explicitly:
 }
 ```
 
+## Runtime Smoke
+
+Before trusting a deployed OpenClaw runtime, run the read-only Cortex smoke
+against the same Cortex URL and owner mode the plugin will use:
+
+```bash
+CORTEX_URL=https://cortex-electricsheep.fly.dev \
+CORTEX_API_KEY="$CORTEX_API_KEY" \
+CORTEX_OWNER_ID=eva-origin \
+COMPANY_BRAIN_SOURCE_SCOPE=internal \
+COMPANY_BRAIN_ACCOUNT_KEY=company:electricsheep-internal \
+npm run runtime:smoke
+```
+
+Omit `CORTEX_OWNER_ID` when the runtime owner mode is `server_resolved`; set it
+only for intentional configured or owner-bound smoke runs.
+
+The smoke verifies memory search, entity list/detail, graph query, and explicit
+`company_brain_*` routes. Set `CORTEX_RUNTIME_SMOKE_REQUIRE_DATA=1` when the
+target owner should already have memories, entities, graph nodes, and Company
+Brain accounts. The script is read-only and does not write plugin storage,
+Cortex SQLite, Intercom, Gmail, Stripe, or customer systems.
+
 ## How It Works
 
 Cortex operates two invisible loops around every agent conversation:
